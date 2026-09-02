@@ -11,8 +11,8 @@ reads/writes my Google and Apple calendars.
 | 1 | Echo bot — prove Telegram <-> this machine works | done |
 | 2 | Chat brain (Gemini API free tier) + conversation memory | done |
 | 3 | Read Google Calendar (`/agenda`) | done |
-| 4 | Write to Google Calendar (create/update events, with confirm step) | **next** |
-| 5 | Apple / iCloud calendar via CalDAV | todo |
+| 4 | Create events via chat, with a confirmation step | done |
+| 5 | Apple / iCloud calendar via CalDAV | **next** |
 | 6 | Deploy so it runs 24/7 | todo |
 
 ## Setup
@@ -62,8 +62,14 @@ may use prompts to improve their products.
 Then message your bot in Telegram — it replies via Gemini and remembers the
 last few turns.
 
+Say things like "add dentist Thursday 3pm" — the bot shows a preview and only
+writes the event after you reply "yes".
+
 Commands: `/agenda` (next 7 days), `/reset` (clear conversation memory).
 `Ctrl+C` stops the bot.
+
+Note: uses the Gemini free tier (`gemini-3.5-flash-lite`). If you hit the daily
+request limit, wait for the reset or switch models in `brain.py`.
 
 **Only ever run one copy at a time** (per bot token).
 
@@ -71,4 +77,4 @@ Commands: `/agenda` (next 7 days), `/reset` (clear conversation memory).
 
 - `bot.py` — Telegram wiring: receives messages, keeps per-chat history, replies.
 - `brain.py` — the only file that knows about the language model. Swappable.
-- `gcal.py` — Google Calendar auth + reading events. Run directly to authorize.
+- `gcal.py` — Google Calendar auth + reading/creating events. Run directly to authorize.

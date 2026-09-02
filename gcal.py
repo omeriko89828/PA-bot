@@ -16,9 +16,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# Phase 3 is read-only. Creating events (Phase 4) needs a wider scope, which will
-# mean deleting token.json and authorizing once more.
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+# calendar.events allows both reading and creating/editing events (not calendar
+# settings). Changing this list invalidates an existing token.json — delete it
+# and re-run this file to re-authorize.
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "token.json"
@@ -67,6 +68,31 @@ def upcoming_events(max_results: int = 25, within_days: int | None = None) -> li
     return result.get("items", [])
 
 
+def create_event(
+    summary: str, start_iso: str, end_iso: str, description: str | None = None
+) -> dict:
+    """
+    Create an event on the primary calendar and return it.
+
+    start_iso / end_iso: ISO 8601 datetimes *with* a timezone offset,
+    e.g. "2026-09-09T15:00:00+03:00".
+    """
+    body = {
+        "summary": summary,
+        "start": {"dateTime": start_iso},
+        "end": {"dateTime": end_iso},
+    }
+    if description:
+        body["description"] = description
+
+    return _service().events().insert(calendarId="primary", body=body).execute()
+
+
+def delete_event(event_id: str) -> None:
+    """Delete an event by its id (used for cleanup / testing)."""
+    _service().events().delete(calendarId="primary", eventId=event_id).execute()
+
+
 def format_events(events: list[dict]) -> str:
     """Turn a list of event dicts into a short human-readable summary."""
     if not events:
@@ -77,6 +103,11 @@ def format_events(events: list[dict]) -> str:
         start = e["start"].get("dateTime") or e["start"].get("date")
         lines.append(f"• {_pretty(start)} — {e.get('summary', '(no title)')}")
     return "\n".join(lines)
+
+
+def pretty(iso: str) -> str:
+    """Public: format an ISO date/datetime string for humans."""
+    return _pretty(iso)
 
 
 def _pretty(iso: str) -> str:
