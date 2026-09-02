@@ -9,8 +9,8 @@ reads/writes my Google and Apple calendars.
 |-------|------|--------|
 | 0 | Project skeleton, virtualenv, secrets handling | done |
 | 1 | Echo bot — prove Telegram <-> this machine works | done |
-| 2 | Chat brain (Gemini API free tier) + conversation memory | **in progress** |
-| 3 | Read Google Calendar ("what's on tomorrow?") | todo |
+| 2 | Chat brain (Gemini API free tier) + conversation memory | done |
+| 3 | Read Google Calendar ("what's on tomorrow?") | **next** |
 | 4 | Write to Google Calendar (create/update events, with confirm step) | todo |
 | 5 | Apple / iCloud calendar via CalDAV | todo |
 | 6 | Deploy so it runs 24/7 | todo |
