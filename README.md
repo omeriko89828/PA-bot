@@ -10,8 +10,8 @@ reads/writes my Google and Apple calendars.
 | 0 | Project skeleton, virtualenv, secrets handling | done |
 | 1 | Echo bot — prove Telegram <-> this machine works | done |
 | 2 | Chat brain (Gemini API free tier) + conversation memory | done |
-| 3 | Read Google Calendar ("what's on tomorrow?") | **next** |
-| 4 | Write to Google Calendar (create/update events, with confirm step) | todo |
+| 3 | Read Google Calendar (`/agenda`) | done |
+| 4 | Write to Google Calendar (create/update events, with confirm step) | **next** |
 | 5 | Apple / iCloud calendar via CalDAV | todo |
 | 6 | Deploy so it runs 24/7 | todo |
 
@@ -39,14 +39,31 @@ cp .env.example .env      # then edit .env with real values
 Free tier: rate-limited (a few requests/minute) but $0. On the free tier Google
 may use prompts to improve their products.
 
+## Phase 3: connect Google Calendar
+
+1. In [console.cloud.google.com](https://console.cloud.google.com): create a
+   project, enable the **Google Calendar API**, configure the OAuth consent
+   screen (External, add yourself as a test user).
+2. **Credentials → Create OAuth client ID → Desktop app**, download the JSON.
+3. Rename it to `credentials.json` in the project folder (gitignored).
+4. Authorize once — opens a browser:
+   ```bash
+   ./.venv/bin/python gcal.py
+   ```
+   This writes `token.json` (gitignored) and prints your next 7 days of events.
+   In the bot, `/agenda` does the same.
+
 ## Run
 
 ```bash
 ./.venv/bin/python bot.py
 ```
 
-Then message your bot in Telegram — it now replies via Gemini and remembers the
-last few turns. `/reset` clears the conversation. `Ctrl+C` stops the bot.
+Then message your bot in Telegram — it replies via Gemini and remembers the
+last few turns.
+
+Commands: `/agenda` (next 7 days), `/reset` (clear conversation memory).
+`Ctrl+C` stops the bot.
 
 **Only ever run one copy at a time** (per bot token).
 
@@ -54,3 +71,4 @@ last few turns. `/reset` clears the conversation. `Ctrl+C` stops the bot.
 
 - `bot.py` — Telegram wiring: receives messages, keeps per-chat history, replies.
 - `brain.py` — the only file that knows about the language model. Swappable.
+- `gcal.py` — Google Calendar auth + reading events. Run directly to authorize.

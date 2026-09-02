@@ -1,14 +1,14 @@
 """
-PA bot — Phase 2: chat brain.
+PA bot — Phase 3: read Google Calendar.
 
-The bot now sends your messages to a language model (Gemini) and replies with
-what it says back. It remembers the last few turns of each conversation so
-follow-up questions make sense.
+The bot chats via Gemini (with memory) and can now list upcoming calendar
+events with the /agenda command. Writing events comes in Phase 4.
 
 Run it with:   ./.venv/bin/python bot.py
 Stop it with:  Ctrl+C
 """
 
+import asyncio
 import logging
 import os
 
@@ -30,6 +30,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 import brain  # noqa: E402  (must come after load_dotenv above)
+import gcal  # noqa: E402
 
 # Log to the console so we can see what the bot is doing.
 logging.basicConfig(
@@ -63,6 +64,23 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs when the user sends /reset — forget the conversation so far."""
     context.chat_data["history"] = []
     await update.message.reply_text("Okay, I've forgotten our conversation.")
+
+
+async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs when the user sends /agenda — list events in the next 7 days."""
+    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+    try:
+        # The Google client is synchronous; run it in a thread so it doesn't
+        # freeze the bot's event loop.
+        events = await asyncio.to_thread(gcal.upcoming_events, 25, 7)
+    except Exception:
+        logger.exception("calendar read failed")
+        await update.message.reply_text(
+            "Couldn't read your calendar. Is token.json set up? "
+            "(Run `./.venv/bin/python gcal.py` once to authorize.)"
+        )
+        return
+    await update.message.reply_text(gcal.format_events(events))
 
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -120,6 +138,7 @@ def main() -> None:
     # Register handlers. Order matters: more specific ones first.
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("agenda", agenda))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_error_handler(on_error)
 
