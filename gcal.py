@@ -47,25 +47,31 @@ def _service():
     return build("calendar", "v3", credentials=_get_credentials())
 
 
-def upcoming_events(max_results: int = 25, within_days: int | None = None) -> list[dict]:
-    """
-    Return upcoming events on the primary calendar, starting now.
-
-    within_days: if given, only events starting in the next N days.
-    """
-    now = dt.datetime.now(dt.timezone.utc)
+def _list(time_min: dt.datetime, time_max: dt.datetime | None, max_results: int) -> list[dict]:
     params = dict(
         calendarId="primary",
-        timeMin=now.isoformat(),
+        timeMin=time_min.astimezone(dt.timezone.utc).isoformat(),
         maxResults=max_results,
         singleEvents=True,      # expand recurring events into individual ones
         orderBy="startTime",
     )
-    if within_days is not None:
-        params["timeMax"] = (now + dt.timedelta(days=within_days)).isoformat()
+    if time_max is not None:
+        params["timeMax"] = time_max.astimezone(dt.timezone.utc).isoformat()
+    return _service().events().list(**params).execute().get("items", [])
 
-    result = _service().events().list(**params).execute()
-    return result.get("items", [])
+
+def upcoming_events(max_results: int = 25, within_days: int | None = None) -> list[dict]:
+    """Upcoming events on the primary calendar, starting now."""
+    now = dt.datetime.now(dt.timezone.utc)
+    time_max = now + dt.timedelta(days=within_days) if within_days is not None else None
+    return _list(now, time_max, max_results)
+
+
+def events_today() -> list[dict]:
+    """Events from now until the end of today (local time)."""
+    now = dt.datetime.now().astimezone()
+    end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    return _list(now, end_of_day, 25)
 
 
 def create_event(
@@ -89,8 +95,14 @@ def create_event(
 
 
 def delete_event(event_id: str) -> None:
-    """Delete an event by its id (used for cleanup / testing)."""
+    """Delete an event by its id."""
     _service().events().delete(calendarId="primary", eventId=event_id).execute()
+
+
+def event_when(event: dict) -> str:
+    """Human-readable start time of an event dict."""
+    start = event["start"].get("dateTime") or event["start"].get("date")
+    return _pretty(start)
 
 
 def format_events(events: list[dict]) -> str:

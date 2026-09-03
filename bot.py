@@ -1,9 +1,9 @@
 """
-PA bot — Phase 4: create calendar events (with a confirmation step).
+PA bot — Phase 5: delete events + a scheduled daily briefing.
 
-The bot chats via Gemini (with memory), lists events with /agenda, and can
-create events: you say "add dentist Tuesday 3pm", it shows you exactly what it
-plans to add, and only writes it after you reply "yes".
+The bot chats via Gemini (with memory), lists events with /agenda, creates and
+deletes events (each behind a yes/no confirmation), and sends a "here's your
+day" message every morning.
 
 Run it with:   ./.venv/bin/python bot.py
 Stop it with:  Ctrl+C
@@ -13,6 +13,8 @@ import asyncio
 import datetime as dt
 import logging
 import os
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -26,8 +28,6 @@ from telegram.ext import (
     filters,
 )
 
-# Load .env into the environment BEFORE importing brain, which reads the key
-# at import time.
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
@@ -39,30 +39,53 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
-# How many past messages (user + model combined) to keep per chat.
 MAX_HISTORY = 20
+CHAT_ID_FILE = Path("chat_id.txt")
+
+BRIEFING_TIME = os.environ.get("BRIEFING_TIME", "08:00")   # HH:MM, local
+BRIEFING_TZ = os.environ.get("BRIEFING_TZ", "Asia/Jerusalem")
 
 _YES = {"yes", "y", "yeah", "yep", "ok", "okay", "sure", "do it", "confirm", "כן"}
-_NO = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "לא", "ביטול"}
+_NO = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "keep it", "לא", "ביטול"}
 
 
-# --- Handlers ---------------------------------------------------------------
+# --- chat id persistence --------------------------------------------------
+# The daily briefing job needs to know which chat to send to. We save the id
+# whenever the owner messages the bot.
+
+
+def _save_chat_id(chat_id: int) -> None:
+    if not CHAT_ID_FILE.exists() or CHAT_ID_FILE.read_text().strip() != str(chat_id):
+        CHAT_ID_FILE.write_text(str(chat_id))
+
+
+def _load_chat_id() -> int | None:
+    try:
+        return int(CHAT_ID_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+# --- command handlers ---------------------------------------------------------
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _save_chat_id(update.effective_chat.id)
     context.chat_data["history"] = []
-    context.chat_data.pop("pending_event", None)
+    context.chat_data.pop("pending_action", None)
     await update.message.reply_text(
-        "Hi! I'm your assistant. Ask me things, check /agenda, or tell me to "
-        "add something to your calendar."
+        "Hi! Ask me things, check /agenda, tell me to add or delete calendar "
+        f"events, and I'll send a briefing every day at {BRIEFING_TIME}."
     )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.chat_data["history"] = []
-    context.chat_data.pop("pending_event", None)
+    context.chat_data.pop("pending_action", None)
     await update.message.reply_text("Okay, I've forgotten our conversation.")
 
 
@@ -81,20 +104,51 @@ async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(gcal.format_events(events))
 
 
+async def briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send today's briefing on demand."""
+    _save_chat_id(update.effective_chat.id)
+    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+    await update.message.reply_text(await _briefing_text())
+
+
+# --- the scheduled job ------------------------------------------------------
+
+
+async def _briefing_text() -> str:
+    try:
+        events = await asyncio.to_thread(gcal.events_today)
+    except Exception:
+        logger.exception("briefing calendar read failed")
+        return "☀️ Good morning! (Couldn't reach your calendar right now.)"
+    if not events:
+        return "☀️ Good morning! Nothing on the calendar for the rest of today."
+    return "☀️ Good morning! Here's the rest of your day:\n\n" + gcal.format_events(events)
+
+
+async def briefing_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = _load_chat_id()
+    if chat_id is None:
+        logger.warning("Daily briefing: no chat id saved yet, skipping.")
+        return
+    await context.bot.send_message(chat_id, await _briefing_text())
+
+
+# --- conversation ---------------------------------------------------------
+
+
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Any plain text message that isn't a command."""
     user_text = update.message.text
+    _save_chat_id(update.effective_chat.id)
     logger.info("Message from %s: %s", update.effective_user.first_name, user_text)
 
     history = context.chat_data.setdefault("history", [])
 
-    # If we're waiting for a yes/no on a proposed event, handle that first.
-    if context.chat_data.get("pending_event"):
-        await _handle_confirmation(update, context, history, user_text)
+    if context.chat_data.get("pending_action"):
+        await _handle_pending(update, context, history, user_text)
         return
 
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-
     try:
         answer = await brain.reply(history, user_text)
     except brain.RateLimited:
@@ -115,37 +169,41 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    if answer.action and answer.action["name"] == "create_event":
-        await _propose_event(update, context, history, user_text, answer.action["args"])
-        return
+    if answer.action:
+        name = answer.action["name"]
+        args = answer.action["args"]
+        if name == "create_event":
+            await _propose_create(update, context, history, user_text, args)
+            return
+        if name == "delete_event":
+            await _propose_delete(update, context, history, user_text, args)
+            return
 
-    # Plain conversational reply.
     _remember(history, user_text, answer.text)
     await update.message.reply_text(answer.text)
 
 
-async def _propose_event(update, context, history, user_text, args) -> None:
-    """Validate the model's proposed event and ask the user to confirm it."""
+async def _propose_create(update, context, history, user_text, args) -> None:
     try:
         start = dt.datetime.fromisoformat(args["start"])
         end = dt.datetime.fromisoformat(args["end"])
         summary = args["summary"].strip()
         assert summary
     except (KeyError, ValueError, AssertionError):
-        logger.warning("bad create_event args from model: %s", args)
+        logger.warning("bad create_event args: %s", args)
         msg = "I couldn't work out the time for that. Can you say it another way?"
         _remember(history, user_text, msg)
         await update.message.reply_text(msg)
         return
 
-    context.chat_data["pending_event"] = {
+    context.chat_data["pending_action"] = {
+        "kind": "create",
         "summary": summary,
         "start": start.isoformat(),
         "end": end.isoformat(),
     }
     preview = (
-        f"📅 Create this event?\n\n"
-        f"{summary}\n"
+        f"📅 Create this event?\n\n{summary}\n"
         f"{gcal.pretty(start.isoformat())} – {end.strftime('%H:%M')}\n\n"
         f"Reply 'yes' to add it, 'no' to cancel."
     )
@@ -153,13 +211,69 @@ async def _propose_event(update, context, history, user_text, args) -> None:
     await update.message.reply_text(preview)
 
 
-async def _handle_confirmation(update, context, history, user_text) -> None:
+async def _propose_delete(update, context, history, user_text, args) -> None:
+    try:
+        events = await asyncio.to_thread(gcal.upcoming_events, 100, 60)
+    except Exception:
+        logger.exception("calendar read failed")
+        await update.message.reply_text("Couldn't read your calendar just now.")
+        return
+
+    if not events:
+        msg = "You have no upcoming events to delete."
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+
+    try:
+        idxs = await brain.choose_events(events, user_text)
+    except brain.RateLimited:
+        await update.message.reply_text("Hit the Gemini free-tier limit — try again in a minute.")
+        return
+    except Exception:
+        logger.exception("choose_events failed")
+        await update.message.reply_text("Couldn't work out which event you meant.")
+        return
+
+    matches = [events[i] for i in idxs]
+
+    if not matches:
+        msg = "I couldn't find an event matching that. Try naming the day or time."
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+
+    if len(matches) > 1:
+        listing = "\n".join(
+            f"• {e.get('summary', '(no title)')} — {gcal.event_when(e)}" for e in matches[:8]
+        )
+        msg = (
+            f"That matches {len(matches)} events:\n\n{listing}\n\n"
+            f"Which one? Add the day or time."
+        )
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+
+    event = matches[0]
+    label = f"{event.get('summary', '(no title)')} — {gcal.event_when(event)}"
+    context.chat_data["pending_action"] = {
+        "kind": "delete",
+        "event_id": event["id"],
+        "label": label,
+    }
+    preview = f"🗑 Delete this event?\n\n{label}\n\nReply 'yes' to delete, 'no' to keep it."
+    _remember(history, user_text, preview)
+    await update.message.reply_text(preview)
+
+
+async def _handle_pending(update, context, history, user_text) -> None:
     answer = user_text.strip().lower()
-    pending = context.chat_data["pending_event"]
+    pending = context.chat_data["pending_action"]
 
     if answer in _NO:
-        context.chat_data.pop("pending_event")
-        msg = "Cancelled — nothing added."
+        context.chat_data.pop("pending_action")
+        msg = "Cancelled — nothing changed."
         _remember(history, user_text, msg)
         await update.message.reply_text(msg)
         return
@@ -168,20 +282,22 @@ async def _handle_confirmation(update, context, history, user_text) -> None:
         await update.message.reply_text("Please reply 'yes' or 'no'.")
         return
 
-    context.chat_data.pop("pending_event")
+    context.chat_data.pop("pending_action")
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-    try:
-        event = await asyncio.to_thread(
-            gcal.create_event, pending["summary"], pending["start"], pending["end"]
-        )
-    except Exception:
-        logger.exception("create_event failed")
-        msg = "Couldn't create the event — something went wrong with Google Calendar."
-        _remember(history, user_text, msg)
-        await update.message.reply_text(msg)
-        return
 
-    msg = f"Added ✅ {event.get('summary')} — {gcal.pretty(pending['start'])}"
+    try:
+        if pending["kind"] == "create":
+            event = await asyncio.to_thread(
+                gcal.create_event, pending["summary"], pending["start"], pending["end"]
+            )
+            msg = f"Added ✅ {event.get('summary')} — {gcal.pretty(pending['start'])}"
+        else:  # delete
+            await asyncio.to_thread(gcal.delete_event, pending["event_id"])
+            msg = f"Deleted ✅ {pending['label']}"
+    except Exception:
+        logger.exception("%s failed", pending["kind"])
+        msg = "Couldn't do that — something went wrong with Google Calendar."
+
     _remember(history, user_text, msg)
     await update.message.reply_text(msg)
 
@@ -202,7 +318,12 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Unhandled error while processing update", exc_info=context.error)
 
 
-# --- Wiring ---------------------------------------------------------------
+# --- wiring -------------------------------------------------------------------
+
+
+def _briefing_time() -> dt.time:
+    hour, minute = (int(x) for x in BRIEFING_TIME.split(":"))
+    return dt.time(hour, minute, tzinfo=ZoneInfo(BRIEFING_TZ))
 
 
 def main() -> None:
@@ -211,12 +332,14 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("agenda", agenda))
+    app.add_handler(CommandHandler("briefing", briefing))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_error_handler(on_error)
 
+    app.job_queue.run_daily(briefing_job, time=_briefing_time(), name="daily_briefing")
+    logger.info("Daily briefing scheduled for %s %s", BRIEFING_TIME, BRIEFING_TZ)
+
     logger.info("Bot starting. Press Ctrl+C to stop.")
-    # drop_pending_updates: ignore messages that arrived while the bot was down,
-    # so a restart doesn't reply to a backlog.
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 

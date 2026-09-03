@@ -12,8 +12,9 @@ reads/writes my Google and Apple calendars.
 | 2 | Chat brain (Gemini API free tier) + conversation memory | done |
 | 3 | Read Google Calendar (`/agenda`) | done |
 | 4 | Create events via chat, with a confirmation step | done |
-| 5 | Apple / iCloud calendar via CalDAV | **next** |
-| 6 | Deploy so it runs 24/7 | todo |
+| 5 | Delete events via chat + scheduled daily briefing | done |
+| 6 | Deploy so it runs 24/7 (Google Cloud e2-micro) | **in progress** |
+| 7 | Apple / iCloud calendar via CalDAV | todo |
 
 ## Setup
 
@@ -62,10 +63,13 @@ may use prompts to improve their products.
 Then message your bot in Telegram — it replies via Gemini and remembers the
 last few turns.
 
-Say things like "add dentist Thursday 3pm" — the bot shows a preview and only
-writes the event after you reply "yes".
+Say things like "add dentist Thursday 3pm" or "cancel my lunch with dad" — the
+bot shows what it will do and only acts after you reply "yes". Event matching for
+deletes is semantic (works across languages).
 
-Commands: `/agenda` (next 7 days), `/reset` (clear conversation memory).
+Commands: `/agenda` (next 7 days), `/briefing` (today's events now), `/reset`
+(clear conversation memory). A briefing is also sent automatically every day at
+`BRIEFING_TIME` (default 08:00, `BRIEFING_TZ` default Asia/Jerusalem).
 `Ctrl+C` stops the bot.
 
 Note: uses the Gemini free tier (`gemini-3.5-flash-lite`). If you hit the daily

@@ -76,6 +76,21 @@ _CREATE_EVENT_TOOL = types.Tool(
     ]
 )
 
+_DELETE_EVENT_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="delete_event",
+            description=(
+                "Delete/cancel/remove an existing calendar event. Call this when "
+                "the user asks to delete, cancel, remove, or clear an event. The "
+                "bot will figure out which event and confirm before deleting — "
+                "you don't need to identify it."
+            ),
+            parameters=types.Schema(type="OBJECT", properties={}),
+        )
+    ]
+)
+
 
 def _system_prompt() -> str:
     now = dt.datetime.now().astimezone()
@@ -99,8 +114,8 @@ def _system_prompt() -> str:
         "nearest FUTURE date with that weekday from the list above. Build "
         "start/end times as ISO 8601 with the offset shown, e.g. "
         f"2026-09-04T16:00:00{now.strftime('%z')[:3]}:00.\n\n"
-        "You can create events with the create_event tool. The user reads their "
-        "calendar with /agenda (you can't). You cannot edit or delete events yet."
+        "You can create events (create_event) and delete events (delete_event). "
+        "The user reads their calendar with /agenda. You cannot edit events."
     )
 
 
@@ -126,7 +141,7 @@ async def reply(history: list[dict], user_message: str) -> Answer:
 
     config = types.GenerateContentConfig(
         system_instruction=_system_prompt(),
-        tools=[_CREATE_EVENT_TOOL],
+        tools=[_CREATE_EVENT_TOOL, _DELETE_EVENT_TOOL],
         # We handle tool calls manually (with a user confirmation step), so the
         # SDK must not execute anything automatically.
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -160,6 +175,48 @@ async def reply(history: list[dict], user_message: str) -> Answer:
         return Answer(action={"name": call.name, "args": dict(call.args or {})})
 
     return Answer(text=(response.text or "").strip() or "(the model returned nothing)")
+
+
+async def choose_events(events: list[dict], user_request: str) -> list[int]:
+    """
+    Given the user's upcoming events and what they said, return the indexes of
+    the events they're referring to (0-based). Empty list = no clear match.
+    Handles different languages / loose wording.
+    """
+    lines = []
+    for i, e in enumerate(events):
+        summary = e.get("summary", "(no title)")
+        start = e["start"].get("dateTime") or e["start"].get("date")
+        lines.append(f"{i}: {summary} — {start}")
+
+    prompt = (
+        "Here are the user's upcoming calendar events:\n"
+        + "\n".join(lines)
+        + f'\n\nThe user wants to delete an event. They said: "{user_request}"\n\n'
+        "Which event(s) do they mean? Reply with ONLY the matching number(s), "
+        "comma-separated (e.g. `2` or `0,3`). If nothing clearly matches, reply "
+        "`none`. Match loosely and across languages — the user may describe an "
+        "event in English that has a Hebrew title."
+    )
+    try:
+        resp = await _client.aio.models.generate_content(model=MODEL, contents=prompt)
+    except genai_errors.APIError as e:
+        if e.code == 429:
+            raise RateLimited from e
+        raise
+
+    text = (resp.text or "").strip().lower()
+    if "none" in text:
+        return []
+    out = []
+    for chunk in text.replace(" ", "").split(","):
+        try:
+            idx = int(chunk)
+        except ValueError:
+            continue
+        if 0 <= idx < len(events):
+            out.append(idx)
+    return out
 
 
 class ModelBusy(Exception):

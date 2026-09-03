@@ -4,6 +4,9 @@
 credentials.json
 token.json
 
+# Runtime state
+chat_id.txt
+
 # Python
 .venv/
 __pycache__/
