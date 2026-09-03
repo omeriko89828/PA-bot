@@ -19,6 +19,7 @@ Run directly to check the connection and list your calendars:
 """
 
 import datetime as dt
+import logging
 import os
 import uuid
 
@@ -26,6 +27,8 @@ import caldav
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 _URL = "https://caldav.icloud.com/"
 
@@ -45,6 +48,17 @@ def _get_client() -> caldav.DAVClient:
             username=os.environ["ICLOUD_USERNAME"],
             password=os.environ["ICLOUD_APP_PASSWORD"],
         )
+        # caldav 3.x's HTTP client negotiates HTTP/2 and HTTP/3; iCloud
+        # advertises HTTP/3 but the connection then fails, and the whole read is
+        # lost. caldav applies auth per-request, not on the session, so swapping
+        # in a plain HTTP/1.1 session is safe.
+        try:
+            import niquests
+
+            _client.session.close()
+            _client.session = niquests.Session(disable_http3=True, disable_http2=True)
+        except Exception:
+            logger.warning("couldn't pin iCloud session to HTTP/1.1", exc_info=True)
     return _client
 
 
