@@ -2,10 +2,13 @@
 The "brain" — everything about talking to the language model lives here.
 
 `reply(history, user_message)` returns an `Answer`:
-  - Answer(text="...")                  a plain conversational reply
-  - Answer(action={"name","args"})      the model wants to create a calendar
-                                        event; the bot must confirm with the
-                                        user before doing anything.
+  - Answer(text="...")             a plain conversational reply
+  - Answer(action={"name","args"}) the model wants to create / delete / edit an
+                                   event; the bot works out the details and
+                                   confirms with the user before doing anything.
+
+Helpers: choose_events() picks which event a request refers to, plan_edit()
+works out an event's new values, briefing_summary() writes the morning briefing.
 
 If we ever swap Gemini for another model, this is the only file that changes.
 """
@@ -13,6 +16,7 @@ If we ever swap Gemini for another model, this is the only file that changes.
 import asyncio
 import dataclasses
 import datetime as dt
+import json
 import logging
 import os
 
@@ -91,18 +95,36 @@ _DELETE_EVENT_TOOL = types.Tool(
     ]
 )
 
+_EDIT_EVENT_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="edit_event",
+            description=(
+                "Change an existing event — move it to a different time, make it "
+                "longer/shorter, or rename it. Call this when the user asks to "
+                "move, reschedule, postpone, rename, or shift an event. The bot "
+                "figures out which event and the new details, and confirms — you "
+                "don't need to identify it."
+            ),
+            parameters=types.Schema(type="OBJECT", properties={}),
+        )
+    ]
+)
 
-def _system_prompt() -> str:
+
+def _date_table() -> tuple[dt.datetime, str]:
+    """(now, a plain-text list of the next 15 dates by weekday)."""
     now = dt.datetime.now().astimezone()
-    # Spell out the next two weeks of dates so the model never has to do date
-    # arithmetic (flash-lite is unreliable at it).
-    calendar_lines = []
+    lines = []
     for i in range(15):
         day = now.date() + dt.timedelta(days=i)
         label = {0: " (today)", 1: " (tomorrow)"}.get(i, "")
-        calendar_lines.append(f"  {day.strftime('%A %Y-%m-%d')}{label}")
-    date_table = "\n".join(calendar_lines)
+        lines.append(f"  {day.strftime('%A %Y-%m-%d')}{label}")
+    return now, "\n".join(lines)
 
+
+def _system_prompt() -> str:
+    now, date_table = _date_table()
     return (
         "You are a personal assistant running inside a Telegram bot. "
         "The user just finished their first year of a CS degree and is building "
@@ -114,8 +136,8 @@ def _system_prompt() -> str:
         "nearest FUTURE date with that weekday from the list above. Build "
         "start/end times as ISO 8601 with the offset shown, e.g. "
         f"2026-09-04T16:00:00{now.strftime('%z')[:3]}:00.\n\n"
-        "You can create events (create_event) and delete events (delete_event). "
-        "The user reads their calendar with /agenda. You cannot edit events."
+        "Tools: create_event (add), delete_event (remove), edit_event (move / "
+        "rename / resize). The user reads their calendar with /agenda."
     )
 
 
@@ -141,7 +163,7 @@ async def reply(history: list[dict], user_message: str) -> Answer:
 
     config = types.GenerateContentConfig(
         system_instruction=_system_prompt(),
-        tools=[_CREATE_EVENT_TOOL, _DELETE_EVENT_TOOL],
+        tools=[_CREATE_EVENT_TOOL, _DELETE_EVENT_TOOL, _EDIT_EVENT_TOOL],
         # We handle tool calls manually (with a user confirmation step), so the
         # SDK must not execute anything automatically.
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -177,33 +199,35 @@ async def reply(history: list[dict], user_message: str) -> Answer:
     return Answer(text=(response.text or "").strip() or "(the model returned nothing)")
 
 
+async def _generate(contents, config=None) -> str:
+    try:
+        resp = await _client.aio.models.generate_content(
+            model=MODEL, contents=contents, config=config
+        )
+    except genai_errors.APIError as e:
+        if e.code == 429:
+            raise RateLimited from e
+        raise
+    return (resp.text or "").strip()
+
+
 async def choose_events(events: list[dict], user_request: str) -> list[int]:
     """
     Given the user's upcoming events and what they said, return the indexes of
     the events they're referring to (0-based). Empty list = no clear match.
     Handles different languages / loose wording.
     """
-    lines = []
-    for i, e in enumerate(events):
-        lines.append(f"{i}: {e['summary']} — {e['start']} [{e['source']}]")
-
+    lines = [f"{i}: {e['summary']} — {e['start']} [{e['source']}]" for i, e in enumerate(events)]
     prompt = (
         "Here are the user's upcoming calendar events:\n"
         + "\n".join(lines)
-        + f'\n\nThe user wants to delete an event. They said: "{user_request}"\n\n'
+        + f'\n\nThe user is referring to an event. They said: "{user_request}"\n\n'
         "Which event(s) do they mean? Reply with ONLY the matching number(s), "
         "comma-separated (e.g. `2` or `0,3`). If nothing clearly matches, reply "
         "`none`. Match loosely and across languages — the user may describe an "
         "event in English that has a Hebrew title."
     )
-    try:
-        resp = await _client.aio.models.generate_content(model=MODEL, contents=prompt)
-    except genai_errors.APIError as e:
-        if e.code == 429:
-            raise RateLimited from e
-        raise
-
-    text = (resp.text or "").strip().lower()
+    text = (await _generate(prompt)).lower()
     if "none" in text:
         return []
     out = []
@@ -215,6 +239,70 @@ async def choose_events(events: list[dict], user_request: str) -> list[int]:
         if 0 <= idx < len(events):
             out.append(idx)
     return out
+
+
+async def plan_edit(event: dict, user_request: str) -> dict | None:
+    """
+    Work out the new summary/start/end for an event the user wants to change.
+    Returns {"summary", "start", "end"} (ISO 8601 with offset), or None if the
+    request can't be turned into a concrete change.
+    """
+    now, date_table = _date_table()
+    prompt = (
+        f"Current time: {now.strftime('%A %Y-%m-%d %H:%M')} (offset {now.strftime('%z')}).\n"
+        f"Upcoming dates:\n{date_table}\n\n"
+        "The user wants to change this calendar event:\n"
+        f"  title: {event['summary']}\n"
+        f"  start: {event['start']}\n"
+        f"  end:   {event['end']}\n\n"
+        f'The user said: "{user_request}"\n\n'
+        "Reply with ONLY a JSON object with keys \"summary\", \"start\", \"end\" "
+        "giving the event's values AFTER the change. Keep fields the user didn't "
+        "mention unchanged. Use ISO 8601 with the timezone offset above. "
+        "If the request doesn't describe a concrete change, reply exactly: null"
+    )
+    text = await _generate(prompt)
+    text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    if text.lower() == "null":
+        return None
+    try:
+        data = json.loads(text)
+        return {
+            "summary": str(data["summary"]),
+            "start": str(data["start"]),
+            "end": str(data["end"]),
+        }
+    except (ValueError, KeyError, TypeError):
+        logger.warning("plan_edit: couldn't parse %r", text)
+        return None
+
+
+async def briefing_summary(events: list[dict], tomorrow_first: dict | None) -> str:
+    """A short, natural morning briefing from today's events. Falls back to '' ."""
+    if not events:
+        lines = "(nothing scheduled)"
+    else:
+        lines = "\n".join(
+            f"  {e['start'][11:16]}–{e['end'][11:16]} {e['summary']}"
+            if not e["all_day"]
+            else f"  all day: {e['summary']}"
+            for e in events
+        )
+    extra = ""
+    if tomorrow_first and not tomorrow_first["all_day"]:
+        extra = f"\nTomorrow's first event: {tomorrow_first['start'][11:16]} {tomorrow_first['summary']}"
+
+    prompt = (
+        "Write a short morning briefing (2-4 sentences, friendly, no bullet "
+        "points) for the user based on the rest of today's schedule. Mention the "
+        "shape of the day — how busy, the first thing coming up, any big gap or "
+        "tight back-to-back stretch. Don't just list the events.\n\n"
+        f"Today's remaining events:\n{lines}{extra}"
+    )
+    try:
+        return await _generate(prompt)
+    except (RateLimited, genai_errors.APIError):
+        return ""
 
 
 class ModelBusy(Exception):

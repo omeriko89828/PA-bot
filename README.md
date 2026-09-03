@@ -15,6 +15,7 @@ reads/writes my Google and Apple calendars.
 | 5 | Delete events via chat + scheduled daily briefing | done |
 | 6 | Deploy so it runs 24/7 (Google Cloud e2-micro) | done |
 | 7 | Apple / iCloud calendar via CalDAV (merged reads) | done |
+| 8 | Yes/No/Chat buttons; edit events; smart briefing | done |
 
 ## Setup
 
@@ -63,9 +64,10 @@ may use prompts to improve their products.
 Then message your bot in Telegram — it replies via Gemini and remembers the
 last few turns.
 
-Say things like "add dentist Thursday 3pm" or "cancel my lunch with dad" — the
-bot shows what it will do and only acts after you reply "yes". Event matching for
-deletes is semantic (works across languages).
+Say things like "add dentist Thursday 3pm", "move my lunch with dad to 2pm", or
+"cancel the workout" — the bot shows what it will do with ✅ Yes / ❌ No / 💬 Chat
+buttons and only acts after you confirm. Finding the event you mean is semantic
+(works across languages); it works out new times for edits itself.
 
 Commands: `/agenda` (today + tomorrow; `/agenda 5` for 5 days), `/briefing`
 (today's events now), `/reset` (clear conversation memory). A briefing is also
@@ -73,7 +75,8 @@ sent automatically every day at `BRIEFING_TIME` (default 08:00, `BRIEFING_TZ`
 default Asia/Jerusalem). `Ctrl+C` stops the bot.
 
 `/agenda` and the briefing merge Google + iCloud events (deduped). New events
-created via chat go to Google.
+created via chat go to Google. The daily briefing is written by the model from
+your schedule (busy/free shape, first event, gaps), not just a list.
 
 Note: uses the Gemini free tier (`gemini-3.5-flash-lite`). If you hit the daily
 request limit, wait for the reset or switch models in `brain.py`.
@@ -85,7 +88,7 @@ request limit, wait for the reset or switch models in `brain.py`.
 - `bot.py` — Telegram wiring: receives messages, keeps per-chat history, replies.
 - `brain.py` — the only file that knows about the language model. Swappable.
 - `cal.py` — merges Google + iCloud behind one interface (the bot only talks to this).
-- `gcal.py` — Google Calendar auth + read/create/delete. Run directly to authorize.
+- `gcal.py` — Google Calendar auth + read/create/update/delete. Run directly to authorize.
 - `icloud.py` — iCloud calendar via CalDAV. Run directly to check the connection.
 
 ## Running 24/7

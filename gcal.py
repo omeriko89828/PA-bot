@@ -67,13 +67,6 @@ def upcoming_events(max_results: int = 25, within_days: int | None = None) -> li
     return _list(now, time_max, max_results)
 
 
-def events_today() -> list[dict]:
-    """Events from now until the end of today (local time)."""
-    now = dt.datetime.now().astimezone()
-    end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
-    return _list(now, end_of_day, 25)
-
-
 def create_event(
     summary: str, start_iso: str, end_iso: str, description: str | None = None
 ) -> dict:
@@ -92,6 +85,21 @@ def create_event(
         body["description"] = description
 
     return _service().events().insert(calendarId="primary", body=body).execute()
+
+
+def update_event(event_id: str, summary: str, start_iso: str, end_iso: str) -> dict:
+    """Change an event's title/time. Returns the updated raw event."""
+    body = {
+        "summary": summary,
+        "start": {"dateTime": start_iso},
+        "end": {"dateTime": end_iso},
+    }
+    return (
+        _service()
+        .events()
+        .patch(calendarId="primary", eventId=event_id, body=body)
+        .execute()
+    )
 
 
 def delete_event(event_id: str) -> None:
@@ -113,6 +121,7 @@ def normalize(event: dict) -> dict:
         "id": event["id"],
         "summary": event.get("summary", "(no title)"),
         "start": event["start"].get("dateTime") or date_only,
+        "end": event["end"].get("dateTime") or event["end"].get("date"),
         "all_day": date_only is not None,
     }
 

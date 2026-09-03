@@ -55,17 +55,6 @@ async def upcoming(days: int = 2) -> list[dict]:
     return _merge([await google])
 
 
-async def today() -> list[dict]:
-    google = asyncio.to_thread(
-        lambda: [gcal.normalize(e) for e in gcal.events_today()]
-    )
-    if icloud.is_configured():
-        apple = asyncio.to_thread(icloud.events_today)
-        g, a = await _gather_lenient(google, apple)
-        return _merge([g, a])
-    return _merge([await google])
-
-
 async def _gather_lenient(google_awaitable, apple_awaitable):
     """Return (google_events, apple_events); if one source errors, log and use []."""
     results = await asyncio.gather(google_awaitable, apple_awaitable, return_exceptions=True)
@@ -128,3 +117,15 @@ async def delete(event: dict) -> None:
         await asyncio.to_thread(icloud.delete_event, event["id"])
     else:
         await asyncio.to_thread(gcal.delete_event, event["id"])
+
+
+async def update(event: dict, summary: str, start_iso: str, end_iso: str) -> dict:
+    """Change an event's title/time in place, on whichever backend it lives."""
+    if event["source"] == "icloud":
+        return await asyncio.to_thread(
+            icloud.update_event, event["id"], summary, start_iso, end_iso
+        )
+    raw = await asyncio.to_thread(
+        gcal.update_event, event["id"], summary, start_iso, end_iso
+    )
+    return gcal.normalize(raw)

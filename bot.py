@@ -133,13 +133,32 @@ async def briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _briefing_text() -> str:
     try:
-        events = await cal.today()
+        two_days = await cal.upcoming(2)
     except Exception:
         logger.exception("briefing calendar read failed")
         return "☀️ Good morning! (Couldn't reach your calendar right now.)"
-    if not events:
+
+    now = dt.datetime.now().astimezone()
+    today_str = now.date().isoformat()
+    tmr_str = (now.date() + dt.timedelta(days=1)).isoformat()
+    today_events = [e for e in two_days if e["start"][:10] == today_str]
+    tmr_events = [e for e in two_days if e["start"][:10] == tmr_str]
+
+    try:
+        summary = await brain.briefing_summary(
+            today_events, tmr_events[0] if tmr_events else None
+        )
+    except Exception:
+        logger.exception("briefing_summary failed")
+        summary = ""
+
+    if summary:
+        return "☀️ " + summary
+
+    # Fallback: plain list.
+    if not today_events:
         return "☀️ Good morning! Nothing on the calendar for the rest of today."
-    return "☀️ Good morning! Here's the rest of your day:\n\n" + cal.format_events(events)
+    return "☀️ Good morning! Here's the rest of your day:\n\n" + cal.format_events(today_events)
 
 
 async def briefing_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -193,7 +212,10 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _propose_create(update, context, history, user_text, args)
             return
         if name == "delete_event":
-            await _propose_delete(update, context, history, user_text, args)
+            await _propose_change(update, context, history, user_text, "delete")
+            return
+        if name == "edit_event":
+            await _propose_change(update, context, history, user_text, "edit")
             return
 
     _remember(history, user_text, answer.text)
@@ -227,7 +249,8 @@ async def _propose_create(update, context, history, user_text, args) -> None:
     await update.message.reply_text(preview, reply_markup=_CONFIRM_KB)
 
 
-async def _propose_delete(update, context, history, user_text, args) -> None:
+async def _propose_change(update, context, history, user_text, kind) -> None:
+    """kind is 'delete' or 'edit'. Find the event, then set up a confirmation."""
     try:
         events = await cal.upcoming(60)
     except Exception:
@@ -236,7 +259,7 @@ async def _propose_delete(update, context, history, user_text, args) -> None:
         return
 
     if not events:
-        msg = "You have no upcoming events to delete."
+        msg = "You have no upcoming events."
         _remember(history, user_text, msg)
         await update.message.reply_text(msg)
         return
@@ -261,21 +284,60 @@ async def _propose_delete(update, context, history, user_text, args) -> None:
 
     if len(matches) > 1:
         listing = "\n".join(f"• {cal.describe(e)}" for e in matches[:8])
-        msg = (
-            f"That matches {len(matches)} events:\n\n{listing}\n\n"
-            f"Which one? Add the day or time."
-        )
+        msg = f"That matches {len(matches)} events:\n\n{listing}\n\nWhich one? Add the day or time."
         _remember(history, user_text, msg)
         await update.message.reply_text(msg)
         return
 
     event = matches[0]
-    context.chat_data["pending_action"] = {
-        "kind": "delete",
-        "event": event,
-        "label": cal.describe(event),
+
+    if kind == "delete":
+        context.chat_data["pending_action"] = {
+            "kind": "delete",
+            "event": event,
+            "label": cal.describe(event),
+        }
+        preview = f"🗑 Delete this event?\n\n{cal.describe(event)}"
+        _remember(history, user_text, preview)
+        await update.message.reply_text(preview, reply_markup=_CONFIRM_KB)
+        return
+
+    # kind == "edit"
+    try:
+        plan = await brain.plan_edit(event, user_text)
+    except brain.RateLimited:
+        await update.message.reply_text("Hit the Gemini free-tier limit — try again in a minute.")
+        return
+    if plan is None:
+        msg = "I couldn't work out the change. Try being specific, e.g. 'move it to Friday 4pm'."
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+
+    try:
+        new_start = dt.datetime.fromisoformat(plan["start"])
+        new_end = dt.datetime.fromisoformat(plan["end"])
+    except ValueError:
+        logger.warning("plan_edit bad times: %s", plan)
+        await update.message.reply_text("I couldn't work out the new time. Say it another way?")
+        return
+
+    after = {
+        "source": event["source"],
+        "summary": plan["summary"],
+        "start": plan["start"],
+        "end": plan["end"],
+        "all_day": False,
     }
-    preview = f"🗑 Delete this event?\n\n{cal.describe(event)}"
+    context.chat_data["pending_action"] = {
+        "kind": "edit",
+        "event": event,
+        "summary": plan["summary"],
+        "start": new_start.isoformat(),
+        "end": new_end.isoformat(),
+        "label": cal.describe(after),
+    }
+    preview = f"✏️ Make this change?\n\nfrom:  {cal.describe(event)}\nto:    {cal.describe(after)}"
     _remember(history, user_text, preview)
     await update.message.reply_text(preview, reply_markup=_CONFIRM_KB)
 
@@ -346,6 +408,11 @@ async def _run_pending(update, context, history, user_text) -> None:
                 pending["summary"], pending["start"], pending["end"]
             )
             msg = f"Added ✅ {cal.describe(event)}"
+        elif pending["kind"] == "edit":
+            event = await cal.update(
+                pending["event"], pending["summary"], pending["start"], pending["end"]
+            )
+            msg = f"Updated ✅ {cal.describe(event)}"
         else:  # delete
             await cal.delete(pending["event"])
             msg = f"Deleted ✅ {pending['label']}"

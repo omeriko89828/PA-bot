@@ -96,16 +96,27 @@ def calendar_names() -> list[str]:
     return [_name(c) for c in _all_calendars()]
 
 
+def _calendar_for(event_url: str):
+    """Which of our event calendars an event URL belongs to."""
+    for c in _get_event_calendars():
+        if event_url.startswith(str(c.url).rstrip("/")):
+            return c
+    return None
+
+
 def _normalize(event) -> dict:
-    # `event` is a caldav.Event; its .url is the stable handle we use to delete.
+    # `event` is a caldav.Event; its .url is the stable handle we use to edit/delete.
     component = event.icalendar_component
     start = component.get("dtstart").dt
+    end_prop = component.get("dtend")
+    end = end_prop.dt if end_prop is not None else start
     all_day = not isinstance(start, dt.datetime)
     return {
         "source": "icloud",
         "id": str(event.url),  # the event's CalDAV URL
         "summary": str(component.get("summary", "(no title)")),
         "start": start.isoformat(),
+        "end": end.isoformat(),
         "all_day": all_day,
     }
 
@@ -122,12 +133,6 @@ def _search(start: dt.datetime, end: dt.datetime) -> list[dict]:
 def upcoming_events(within_days: int = 2) -> list[dict]:
     now = dt.datetime.now().astimezone()
     return _search(now, now + dt.timedelta(days=within_days))
-
-
-def events_today() -> list[dict]:
-    now = dt.datetime.now().astimezone()
-    end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
-    return _search(now, end_of_day)
 
 
 def create_event(summary: str, start_iso: str, end_iso: str) -> dict:
@@ -154,6 +159,31 @@ def create_event(summary: str, start_iso: str, end_iso: str) -> dict:
         "id": str(saved.url),
         "summary": summary,
         "start": start_iso,
+        "end": end_iso,
+        "all_day": False,
+    }
+
+
+def update_event(url: str, summary: str, start_iso: str, end_iso: str) -> dict:
+    """Replace an iCloud event's title/time. `url` is the `id` from _normalize."""
+    parent = _calendar_for(url)
+    if parent is None:
+        raise RuntimeError(f"can't find the calendar for iCloud event {url}")
+    event = parent.event_by_url(url)  # a real, loaded resource
+    comp = event.icalendar_component
+    comp["summary"] = summary
+    comp["dtstart"].dt = dt.datetime.fromisoformat(start_iso)
+    if "dtend" in comp:
+        comp["dtend"].dt = dt.datetime.fromisoformat(end_iso)
+    else:
+        comp.add("dtend", dt.datetime.fromisoformat(end_iso))
+    event.save()
+    return {
+        "source": "icloud",
+        "id": url,
+        "summary": summary,
+        "start": start_iso,
+        "end": end_iso,
         "all_day": False,
     }
 
