@@ -34,6 +34,9 @@ _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 # Fast and consistent (~0.7s), function calling works, generous-ish free tier.
 MODEL = "gemini-3.5-flash-lite"
 
+# Language for the daily briefing (chat replies just match whatever you write).
+BRIEFING_LANG = os.environ.get("BRIEFING_LANG", "Hebrew")
+
 # Only retry on 503 (server briefly overloaded). A 429 means we hit a rate/quota
 # limit — retrying just freezes the bot, so we surface it instead.
 RETRY_ON = (503,)
@@ -293,10 +296,10 @@ async def briefing_summary(events: list[dict], tomorrow_first: dict | None) -> s
         extra = f"\nTomorrow's first event: {tomorrow_first['start'][11:16]} {tomorrow_first['summary']}"
 
     prompt = (
-        "Write a short morning briefing (2-4 sentences, friendly, no bullet "
-        "points) for the user based on the rest of today's schedule. Mention the "
-        "shape of the day — how busy, the first thing coming up, any big gap or "
-        "tight back-to-back stretch. Don't just list the events.\n\n"
+        f"Write a short morning briefing in {BRIEFING_LANG} (2-4 sentences, "
+        "friendly, no bullet points) based on the rest of today's schedule. "
+        "Mention the shape of the day — how busy, the first thing coming up, any "
+        "big gap or tight back-to-back stretch. Don't just list the events.\n\n"
         f"Today's remaining events:\n{lines}{extra}"
     )
     try:

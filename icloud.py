@@ -131,13 +131,25 @@ def _normalize(event) -> dict:
     }
 
 
+def _reset() -> None:
+    global _client, _event_calendars
+    _client = None
+    _event_calendars = None
+
+
 def _search(start: dt.datetime, end: dt.datetime) -> list[dict]:
-    out = []
-    for c in _get_event_calendars():
-        for e in c.search(start=start, end=end, event=True, expand=True):
-            out.append(_normalize(e))
-    out.sort(key=lambda ev: ev["start"])
-    return out
+    for attempt in (1, 2):
+        try:
+            out = []
+            for c in _get_event_calendars():
+                for e in c.search(start=start, end=end, event=True, expand=True):
+                    out.append(_normalize(e))
+            out.sort(key=lambda ev: ev["start"])
+            return out
+        except Exception:
+            if attempt == 2:
+                raise
+            _reset()  # drop the stale connection and reconnect once
 
 
 def upcoming_events(within_days: int = 2) -> list[dict]:

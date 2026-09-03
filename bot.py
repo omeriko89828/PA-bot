@@ -136,7 +136,7 @@ async def _briefing_text() -> str:
         two_days = await cal.upcoming(2)
     except Exception:
         logger.exception("briefing calendar read failed")
-        return "☀️ Good morning! (Couldn't reach your calendar right now.)"
+        return "☀️ בוקר טוב! (לא הצלחתי להגיע ליומן כרגע.)"
 
     now = dt.datetime.now().astimezone()
     today_str = now.date().isoformat()
@@ -157,8 +157,8 @@ async def _briefing_text() -> str:
 
     # Fallback: plain list.
     if not today_events:
-        return "☀️ Good morning! Nothing on the calendar for the rest of today."
-    return "☀️ Good morning! Here's the rest of your day:\n\n" + cal.format_events(today_events)
+        return "☀️ בוקר טוב! אין עוד אירועים ביומן להיום."
+    return "☀️ בוקר טוב! מה שנשאר להיום:\n\n" + cal.format_events(today_events)
 
 
 async def briefing_job(context: ContextTypes.DEFAULT_TYPE) -> None:
