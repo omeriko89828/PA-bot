@@ -39,6 +39,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 import brain  # noqa: E402  (must come after load_dotenv above)
 import cal  # noqa: E402  (Google + iCloud merged behind one interface)
 import habits  # noqa: E402
+import reminders  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -217,6 +218,53 @@ async def briefing_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_message(chat_id, await _briefing_text())
 
 
+async def proactive_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs midday and evening. Pings the owner only if there's something useful."""
+    chat_id = _load_chat_id()
+    if chat_id is None:
+        return
+    slot = "midday" if dt.datetime.now().hour < 17 else "evening"
+    try:
+        events = await cal.upcoming(2)
+        routines = habits.analyse(await cal.recall(PATTERN_WEEKS * 7), events)
+        note = await brain.proactive_note(events, routines, slot)
+    except Exception:
+        logger.exception("proactive_job failed")
+        return
+    if note:
+        await context.bot.send_message(chat_id, "💡 " + note)
+
+
+# --- reminders -----------------------------------------------------------------
+
+
+async def reminder_fire(context: ContextTypes.DEFAULT_TYPE) -> None:
+    r = reminders.get(context.job.data)
+    if r is None:
+        return
+    reminders.remove(r["id"])
+    await context.bot.send_message(r["chat_id"], "🔔 " + r["text"])
+
+
+def _schedule_reminder(job_queue, r: dict) -> None:
+    job_queue.run_once(
+        reminder_fire,
+        when=dt.datetime.fromisoformat(r["when"]),
+        data=r["id"],
+        name=f"reminder:{r['id']}",
+    )
+
+
+async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reminders — list pending reminders."""
+    mine = reminders.all_for(update.effective_chat.id)
+    if not mine:
+        await update.message.reply_text("No reminders set.")
+        return
+    lines = "\n".join(f"• {cal.pretty(r['when'])} — {r['text']}" for r in mine)
+    await update.message.reply_text("🔔 Reminders:\n" + lines)
+
+
 # --- conversation ---------------------------------------------------------
 
 
@@ -284,9 +332,71 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _remember(history, user_text, msg)
             await update.message.reply_text(msg)
             return
+        if name == "set_reminder":
+            await _set_reminder(update, context, history, user_text, args)
+            return
+        if name == "cancel_reminder":
+            await _propose_cancel_reminder(update, context, history, user_text)
+            return
 
     _remember(history, user_text, answer.text)
     await update.message.reply_text(answer.text)
+
+
+async def _set_reminder(update, context, history, user_text, args) -> None:
+    text = str(args.get("text", "")).strip()
+    try:
+        when = dt.datetime.fromisoformat(_with_offset(args["when"]))
+    except (KeyError, ValueError, TypeError):
+        msg = "When should I remind you? Give me a time."
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+    if not text:
+        text = "reminder"
+    if when <= dt.datetime.now().astimezone():
+        msg = "That time's already passed — try a future time."
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+
+    r = reminders.add(text, when.isoformat(), update.effective_chat.id)
+    _schedule_reminder(context.job_queue, r)
+    msg = f"🔔 Reminder set — {cal.pretty(r['when'])}: {text}"
+    _remember(history, user_text, msg)
+    await update.message.reply_text(msg)
+
+
+async def _propose_cancel_reminder(update, context, history, user_text) -> None:
+    mine = reminders.all_for(update.effective_chat.id)
+    if not mine:
+        msg = "You have no reminders to cancel."
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+
+    events_like = [
+        {"summary": r["text"], "start": r["when"], "source": "reminder"} for r in mine
+    ]
+    try:
+        idxs = await brain.choose_events(events_like, user_text)
+    except Exception:
+        logger.exception("choose reminder failed")
+        idxs = list(range(len(mine)))  # fall back to showing all
+
+    picks = [mine[i] for i in idxs] or mine
+    if len(picks) > 1:
+        lines = "\n".join(f"• {cal.pretty(r['when'])} — {r['text']}" for r in picks)
+        msg = f"Which reminder?\n{lines}\n\nName the time or the text."
+        _remember(history, user_text, msg)
+        await update.message.reply_text(msg)
+        return
+
+    r = picks[0]
+    context.chat_data["pending_action"] = {"kind": "cancel_reminder", "reminder": r}
+    preview = f"🔕 Cancel this reminder?\n\n{cal.pretty(r['when'])} — {r['text']}"
+    _remember(history, user_text, preview)
+    await update.message.reply_text(preview, reply_markup=_CONFIRM_KB)
 
 
 async def _handle_recall(update, context, history, user_text, args) -> None:
@@ -580,12 +690,18 @@ async def _run_pending(update, context, history, user_text) -> None:
                 pending["event"], pending["summary"], pending["start"], pending["end"]
             )
             msg = f"Updated ✅ {cal.describe(event)}"
+        elif pending["kind"] == "cancel_reminder":
+            r = pending["reminder"]
+            reminders.remove(r["id"])
+            for job in context.job_queue.get_jobs_by_name(f"reminder:{r['id']}"):
+                job.schedule_removal()
+            msg = f"Cancelled 🔕 {r['text']}"
         else:  # delete
             await cal.delete(pending["event"])
             msg = f"Deleted ✅ {pending['label']}"
     except Exception:
         logger.exception("%s failed", pending["kind"])
-        msg = "Couldn't do that — something went wrong with the calendar."
+        msg = "Couldn't do that — something went wrong."
 
     _remember(history, user_text, msg)
     await reply(msg)
@@ -616,15 +732,27 @@ def _briefing_time() -> dt.time:
 
 
 async def _post_init(app: Application) -> None:
-    """Runs once on startup — set the command menu shown when you type '/'."""
+    """Runs once on startup: command menu + re-arm saved reminders."""
     await app.bot.set_my_commands(
         [
             ("agenda", "Today + tomorrow (/agenda 5 for more)"),
             ("briefing", "Today's briefing now"),
             ("patterns", "Your recurring routines"),
+            ("reminders", "List your reminders"),
             ("reset", "Forget the conversation"),
         ]
     )
+
+    overdue, upcoming = reminders.split_by_time(dt.datetime.now().astimezone())
+    for r in overdue:  # bot was down when these were due — fire them now
+        reminders.remove(r["id"])
+        try:
+            await app.bot.send_message(r["chat_id"], "🔔 (missed) " + r["text"])
+        except Exception:
+            logger.exception("couldn't deliver missed reminder")
+    for r in upcoming:
+        _schedule_reminder(app.job_queue, r)
+    logger.info("Reminders: %d re-armed, %d fired as missed", len(upcoming), len(overdue))
 
 
 def main() -> None:
@@ -635,12 +763,16 @@ def main() -> None:
     app.add_handler(CommandHandler("agenda", agenda))
     app.add_handler(CommandHandler("briefing", briefing))
     app.add_handler(CommandHandler("patterns", patterns))
+    app.add_handler(CommandHandler("reminders", reminders_cmd))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^confirm:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_error_handler(on_error)
 
+    tz = ZoneInfo(BRIEFING_TZ)
     app.job_queue.run_daily(briefing_job, time=_briefing_time(), name="daily_briefing")
-    logger.info("Daily briefing scheduled for %s %s", BRIEFING_TIME, BRIEFING_TZ)
+    app.job_queue.run_daily(proactive_job, time=dt.time(13, 30, tzinfo=tz), name="proactive_midday")
+    app.job_queue.run_daily(proactive_job, time=dt.time(20, 30, tzinfo=tz), name="proactive_evening")
+    logger.info("Briefing %s %s; proactive 13:30 + 20:30", BRIEFING_TIME, BRIEFING_TZ)
 
     logger.info("Bot starting. Press Ctrl+C to stop.")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

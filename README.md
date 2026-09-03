@@ -19,6 +19,7 @@ reads/writes my Google and Apple calendars.
 | 9 | Look up past events ("when did I last…") | done |
 | 10 | Habit detection — `/patterns`, recurring routines, missing-this-week | done |
 | 11 | Add several events at once, recurring events, invite attendees | done |
+| 12 | Reminders (persisted) + occasional proactive check-ins | done |
 
 ## Setup
 
@@ -74,11 +75,18 @@ bot shows what it will do with ✅ Yes / ❌ No / 💬 Chat buttons and only act
 you confirm. Finding the event you mean for edits/deletes is semantic (works
 across languages).
 
+"Remind me to call the plumber at 5pm" sets a 🔔 nudge (kept in
+`reminders.json`, re-armed on restart). `/reminders` lists them.
+
+The bot also checks in on its own at ~13:30 and ~20:30 — but only sends
+something if there's a real reason (a long gap, back-to-back crunch, early
+start tomorrow, a routine missing this week); otherwise it stays quiet.
+
 Commands: `/agenda` (today + tomorrow; `/agenda 5` for 5 days), `/briefing`
 (today's events now), `/patterns` (recurring routines from the last 8 weeks),
-`/reset` (clear conversation memory). A briefing is also sent automatically
-every day at `BRIEFING_TIME` (default 08:00, `BRIEFING_TZ` default
-Asia/Jerusalem). `Ctrl+C` stops the bot.
+`/reminders` (list reminders), `/reset` (clear conversation memory). A briefing
+is also sent automatically every day at `BRIEFING_TIME` (default 08:00,
+`BRIEFING_TZ` default Asia/Jerusalem). `Ctrl+C` stops the bot.
 
 There's also a persistent button bar (🗓 Agenda / 🌤 Briefing / 📊 Patterns) above
 the text box — same as the commands, just tappable.
@@ -101,6 +109,7 @@ request limit, wait for the reset or switch models in `brain.py`.
 - `brain.py` — the only file that knows about the language model. Swappable.
 - `cal.py` — merges Google + iCloud behind one interface (the bot only talks to this).
 - `habits.py` — deterministic recurring-routine detection from past events.
+- `reminders.py` — reminder storage (reminders.json).
 - `gcal.py` — Google Calendar auth + read/create/update/delete. Run directly to authorize.
 - `icloud.py` — iCloud calendar via CalDAV. Run directly to check the connection.
 

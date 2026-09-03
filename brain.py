@@ -130,6 +130,50 @@ _EDIT_EVENT_TOOL = types.Tool(
     ]
 )
 
+_REMINDER_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="set_reminder",
+            description=(
+                "Set a one-off reminder — a plain nudge at a chosen time, NOT a "
+                "calendar event. Use for 'remind me to…', 'ping me at…', 'don't "
+                "let me forget…'. If the time depends on an event you don't know "
+                "('30 min before the dentist'), ask the user for the clock time."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "text": types.Schema(
+                        type="STRING", description="What to remind them, e.g. 'call the plumber'."
+                    ),
+                    "when": types.Schema(
+                        type="STRING",
+                        description=(
+                            "When to fire it, ISO 8601 with the timezone offset "
+                            "from the system instructions, e.g. "
+                            "'2026-09-09T17:00:00+03:00'."
+                        ),
+                    ),
+                },
+                required=["text", "when"],
+            ),
+        )
+    ]
+)
+
+_CANCEL_REMINDER_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="cancel_reminder",
+            description=(
+                "Cancel/delete an existing reminder the user previously set. The "
+                "bot figures out which one and confirms."
+            ),
+            parameters=types.Schema(type="OBJECT", properties={}),
+        )
+    ]
+)
+
 _PATTERNS_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -202,7 +246,8 @@ def _system_prompt() -> str:
         "Tools: create_events (add one or more, recurring, with attendees), "
         "delete_event (remove), edit_event (move / rename / resize), recall "
         "(look at specific past events), find_patterns (recurring routines / "
-        "habits). The user reads their upcoming calendar with /agenda."
+        "habits), set_reminder / cancel_reminder (plain nudges, not events). "
+        "The user reads their upcoming calendar with /agenda."
     )
 
 
@@ -234,6 +279,8 @@ async def reply(history: list[dict], user_message: str) -> Answer:
             _EDIT_EVENT_TOOL,
             _RECALL_TOOL,
             _PATTERNS_TOOL,
+            _REMINDER_TOOL,
+            _CANCEL_REMINDER_TOOL,
         ],
         # We handle tool calls manually (with a user confirmation step), so the
         # SDK must not execute anything automatically.
@@ -390,6 +437,47 @@ async def answer_about_events(events: list[dict], question: str) -> str:
         f"Events:\n{lines}\n\nQuestion: {question}"
     )
     return await _generate(prompt)
+
+
+async def proactive_note(
+    events: list[dict], routines: list[dict], slot: str
+) -> str:
+    """
+    Decide whether there's something worth pinging the user about right now.
+    Returns the message, or "" to stay quiet.
+    """
+    now = dt.datetime.now().astimezone()
+    ev_lines = (
+        "\n".join(
+            f"  {e['start'][:16].replace('T', ' ')}"
+            + (f"-{e['end'][11:16]}" if not e["all_day"] else " (all day)")
+            + f"  {e['summary']}"
+            for e in events
+        )
+        or "  (nothing)"
+    )
+    routine_lines = (
+        "\n".join(
+            f"  {r['title']}: ~{r['per_week']}/week, mostly {'/'.join(r['days'])}"
+            + (" — NOT on the calendar for the coming week" if r["missing_next_week"] and r["per_week"] >= 0.75 else "")
+            for r in routines[:8]
+        )
+        or "  (none detected)"
+    )
+    prompt = (
+        f"It is {now.strftime('%A %H:%M')} ({slot}). You may send the user ONE "
+        f"short proactive note in {BRIEFING_LANG} (1-2 sentences) — but only if "
+        "there is something genuinely useful: a long free gap today, a tight "
+        "back-to-back stretch, a clash, an early start tomorrow, or a usual "
+        "routine that's missing this week. If nothing clears that bar, reply "
+        "with exactly: SKIP\n\n"
+        f"Today & tomorrow:\n{ev_lines}\n\nRoutines:\n{routine_lines}"
+    )
+    try:
+        out = (await _generate(prompt)).strip()
+    except (RateLimited, genai_errors.APIError):
+        return ""
+    return "" if out.upper().startswith("SKIP") else out
 
 
 async def briefing_summary(events: list[dict], tomorrow_first: dict | None) -> str:

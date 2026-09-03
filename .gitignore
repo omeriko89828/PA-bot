@@ -6,6 +6,7 @@ token.json
 
 # Runtime state
 chat_id.txt
+reminders.json
 
 # Python
 .venv/
