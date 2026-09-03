@@ -262,8 +262,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if answer.action:
         name = answer.action["name"]
         args = answer.action["args"]
-        if name == "create_event":
-            await _propose_create(update, context, history, user_text, args)
+        if name == "create_events":
+            await _propose_creates(update, context, history, user_text, args)
             return
         if name == "delete_event":
             await _propose_change(update, context, history, user_text, "delete")
@@ -314,29 +314,90 @@ async def _handle_recall(update, context, history, user_text, args) -> None:
     await update.message.reply_text(msg)
 
 
-async def _propose_create(update, context, history, user_text, args) -> None:
-    try:
-        start = dt.datetime.fromisoformat(args["start"])
-        end = dt.datetime.fromisoformat(args["end"])
-        summary = args["summary"].strip()
-        assert summary
-    except (KeyError, ValueError, AssertionError):
-        logger.warning("bad create_event args: %s", args)
-        msg = "I couldn't work out the time for that. Can you say it another way?"
+_LOCAL_TZ = dt.datetime.now().astimezone().tzinfo
+
+
+def _with_offset(iso: str) -> str:
+    """The model sometimes drops the timezone offset; add the local one back."""
+    d = dt.datetime.fromisoformat(iso)
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_LOCAL_TZ)
+    return d.isoformat()
+
+
+def _rrule_english(rrule: str) -> str:
+    """A rough human phrasing of an RRULE for the preview."""
+    parts = dict(
+        p.split("=", 1) for p in rrule.upper().removeprefix("RRULE:").split(";") if "=" in p
+    )
+    freq = parts.get("FREQ", "").lower()
+    interval = parts.get("INTERVAL")
+    base = {"daily": "every day", "weekly": "weekly", "monthly": "monthly", "yearly": "yearly"}.get(freq, freq)
+    if interval and interval != "1":
+        base = f"every {interval} {freq[:-2] if freq.endswith('LY') else freq}s".lower()
+    days = parts.get("BYDAY")
+    if days:
+        base += f" on {days.replace(',', '/')}"
+    if parts.get("COUNT"):
+        base += f", {parts['COUNT']} times"
+    if parts.get("UNTIL"):
+        base += f", until {parts['UNTIL'][:8]}"
+    return base
+
+
+async def _propose_creates(update, context, history, user_text, args) -> None:
+    raw = args.get("events") or []
+    events = []
+    for item in raw:
+        try:
+            summary = str(item["summary"]).strip()
+            assert summary
+            start = _with_offset(item["start"])
+            if item.get("end"):
+                end = _with_offset(item["end"])
+            else:  # model sometimes omits it — default to +1h
+                end = (dt.datetime.fromisoformat(start) + dt.timedelta(hours=1)).isoformat()
+        except (KeyError, ValueError, AssertionError, TypeError):
+            logger.warning("bad event in create_events: %s", item)
+            continue
+        events.append(
+            {
+                "summary": summary,
+                "start": start,
+                "end": end,
+                "recurrence": (item.get("recurrence") or "").strip() or None,
+                "attendees": [a for a in (item.get("attendees") or []) if "@" in str(a)],
+            }
+        )
+
+    if not events:
+        msg = "I couldn't work out the details for that. Can you say it another way?"
         _remember(history, user_text, msg)
         await update.message.reply_text(msg)
         return
 
-    context.chat_data["pending_action"] = {
-        "kind": "create",
-        "summary": summary,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-    }
-    preview = (
-        f"📅 Create this event?\n\n{summary}\n"
-        f"{cal.pretty(start.isoformat())} – {end.strftime('%H:%M')}"
-    )
+    context.chat_data["pending_action"] = {"kind": "create_multi", "events": events}
+
+    def _one_line(e, i=None):
+        head = f"{i}. " if i else ""
+        line = f"{head}{e['summary']} — {cal.pretty(e['start'])}"
+        if not e["recurrence"]:
+            line += f"–{dt.datetime.fromisoformat(e['end']).strftime('%H:%M')}"
+        extras = []
+        if e["recurrence"]:
+            extras.append(_rrule_english(e["recurrence"]))
+        if e["attendees"]:
+            extras.append("invite " + ", ".join(e["attendees"]))
+        if extras:
+            line += f"  ({'; '.join(extras)})"
+        return line
+
+    if len(events) == 1:
+        preview = "📅 Create this event?\n\n" + _one_line(events[0])
+    else:
+        preview = f"📅 Create these {len(events)} events?\n\n" + "\n".join(
+            _one_line(e, i + 1) for i, e in enumerate(events)
+        )
     _remember(history, user_text, preview)
     await update.message.reply_text(preview, reply_markup=_CONFIRM_KB)
 
@@ -495,11 +556,25 @@ async def _run_pending(update, context, history, user_text) -> None:
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
 
     try:
-        if pending["kind"] == "create":
-            event = await cal.create(
-                pending["summary"], pending["start"], pending["end"]
-            )
-            msg = f"Added ✅ {cal.describe(event)}"
+        if pending["kind"] == "create_multi":
+            done, failed = [], 0
+            for e in pending["events"]:
+                try:
+                    ev = await cal.create(
+                        e["summary"], e["start"], e["end"], e["recurrence"], e["attendees"]
+                    )
+                    done.append(ev)
+                except Exception:
+                    logger.exception("create failed for %s", e["summary"])
+                    failed += 1
+            if done and not failed:
+                msg = "Added ✅\n" + "\n".join(cal.describe(ev) for ev in done)
+            elif done:
+                msg = f"Added {len(done)}, {failed} failed:\n" + "\n".join(
+                    cal.describe(ev) for ev in done
+                )
+            else:
+                msg = "Couldn't create any of them — something went wrong."
         elif pending["kind"] == "edit":
             event = await cal.update(
                 pending["event"], pending["summary"], pending["start"], pending["end"]

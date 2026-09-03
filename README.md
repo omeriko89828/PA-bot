@@ -18,6 +18,7 @@ reads/writes my Google and Apple calendars.
 | 8 | Yes/No/Chat buttons; edit events; smart briefing | done |
 | 9 | Look up past events ("when did I last…") | done |
 | 10 | Habit detection — `/patterns`, recurring routines, missing-this-week | done |
+| 11 | Add several events at once, recurring events, invite attendees | done |
 
 ## Setup
 
@@ -66,10 +67,12 @@ may use prompts to improve their products.
 Then message your bot in Telegram — it replies via Gemini and remembers the
 last few turns.
 
-Say things like "add dentist Thursday 3pm", "move my lunch with dad to 2pm", or
-"cancel the workout" — the bot shows what it will do with ✅ Yes / ❌ No / 💬 Chat
-buttons and only acts after you confirm. Finding the event you mean is semantic
-(works across languages); it works out new times for edits itself.
+Say things like "add dentist Thursday 3pm", "gym every Mon/Wed/Fri 7am",
+"lunch with sara@example.com Friday 1pm", "move my lunch to 2pm", or "cancel the
+workout" — one event or several at once, recurring or not, with attendees. The
+bot shows what it will do with ✅ Yes / ❌ No / 💬 Chat buttons and only acts after
+you confirm. Finding the event you mean for edits/deletes is semantic (works
+across languages).
 
 Commands: `/agenda` (today + tomorrow; `/agenda 5` for 5 days), `/briefing`
 (today's events now), `/patterns` (recurring routines from the last 8 weeks),

@@ -45,40 +45,55 @@ MAX_ATTEMPTS = 3
 
 # --- Tools the model is allowed to request -------------------------------------
 
-_CREATE_EVENT_TOOL = types.Tool(
+_EVENT_ITEM = types.Schema(
+    type="OBJECT",
+    properties={
+        "summary": types.Schema(
+            type="STRING", description="Short event title, e.g. 'Dentist appointment'."
+        ),
+        "start": types.Schema(
+            type="STRING",
+            description=(
+                "Start time as ISO 8601 WITH the timezone offset from the system "
+                "instructions, e.g. '2026-09-09T15:00:00+03:00'. For a recurring "
+                "event this is the first occurrence."
+            ),
+        ),
+        "end": types.Schema(
+            type="STRING",
+            description="End time, same format. Default one hour after start.",
+        ),
+        "recurrence": types.Schema(
+            type="STRING",
+            description=(
+                "Optional. An iCalendar RRULE for a repeating event, e.g. "
+                "'FREQ=WEEKLY;BYDAY=MO,WE,FR' or 'FREQ=DAILY;COUNT=5' or "
+                "'FREQ=WEEKLY;INTERVAL=2'. Omit for one-off events."
+            ),
+        ),
+        "attendees": types.Schema(
+            type="ARRAY",
+            items=types.Schema(type="STRING"),
+            description="Optional. Email addresses to invite to the event.",
+        ),
+    },
+    required=["summary", "start", "end"],
+)
+
+_CREATE_EVENTS_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
-            name="create_event",
+            name="create_events",
             description=(
-                "Create a calendar event. Call this whenever the user asks to "
-                "add, schedule, book, set up, or remind them of something at a "
-                "particular time."
+                "Create one or MORE calendar events. Use this whenever the user "
+                "asks to add, schedule, book, or set up something — a single "
+                "event, several at once, a recurring event, or an event with "
+                "attendees to invite."
             ),
             parameters=types.Schema(
                 type="OBJECT",
-                properties={
-                    "summary": types.Schema(
-                        type="STRING",
-                        description="Short event title, e.g. 'Dentist appointment'.",
-                    ),
-                    "start": types.Schema(
-                        type="STRING",
-                        description=(
-                            "Start time as ISO 8601 with timezone offset, "
-                            "e.g. '2026-09-09T15:00:00+03:00'. Resolve relative "
-                            "dates ('tuesday', 'tomorrow') using the current "
-                            "date given in the system instructions."
-                        ),
-                    ),
-                    "end": types.Schema(
-                        type="STRING",
-                        description=(
-                            "End time, same format as start. If the user gives "
-                            "no duration, use one hour after start."
-                        ),
-                    ),
-                },
-                required=["summary", "start", "end"],
+                properties={"events": types.Schema(type="ARRAY", items=_EVENT_ITEM)},
+                required=["events"],
             ),
         )
     ]
@@ -184,10 +199,10 @@ def _system_prompt() -> str:
         "nearest FUTURE date with that weekday from the list above. Build "
         "start/end times as ISO 8601 with the offset shown, e.g. "
         f"2026-09-04T16:00:00{now.strftime('%z')[:3]}:00.\n\n"
-        "Tools: create_event (add), delete_event (remove), edit_event (move / "
-        "rename / resize), recall (look at specific past events), find_patterns "
-        "(recurring routines / habits). The user reads their upcoming calendar "
-        "with /agenda."
+        "Tools: create_events (add one or more, recurring, with attendees), "
+        "delete_event (remove), edit_event (move / rename / resize), recall "
+        "(look at specific past events), find_patterns (recurring routines / "
+        "habits). The user reads their upcoming calendar with /agenda."
     )
 
 
@@ -214,7 +229,7 @@ async def reply(history: list[dict], user_message: str) -> Answer:
     config = types.GenerateContentConfig(
         system_instruction=_system_prompt(),
         tools=[
-            _CREATE_EVENT_TOOL,
+            _CREATE_EVENTS_TOOL,
             _DELETE_EVENT_TOOL,
             _EDIT_EVENT_TOOL,
             _RECALL_TOOL,

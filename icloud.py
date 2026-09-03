@@ -176,24 +176,35 @@ def events_in_window(start: dt.datetime, end: dt.datetime) -> list[dict]:
     return _search(start, end)
 
 
-def create_event(summary: str, start_iso: str, end_iso: str) -> dict:
+def create_event(
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    recurrence: str | None = None,
+    attendees: list[str] | None = None,
+) -> dict:
     uid = str(uuid.uuid4())
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     start = dt.datetime.fromisoformat(start_iso).strftime("%Y%m%dT%H%M%S")
     end = dt.datetime.fromisoformat(end_iso).strftime("%Y%m%dT%H%M%S")
-    ical = (
-        "BEGIN:VCALENDAR\r\n"
-        "VERSION:2.0\r\n"
-        "PRODID:-//PA bot//EN\r\n"
-        "BEGIN:VEVENT\r\n"
-        f"UID:{uid}\r\n"
-        f"DTSTAMP:{stamp}\r\n"
-        f"DTSTART:{start}\r\n"
-        f"DTEND:{end}\r\n"
-        f"SUMMARY:{summary}\r\n"
-        "END:VEVENT\r\n"
-        "END:VCALENDAR\r\n"
-    )
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//PA bot//EN",
+        "BEGIN:VEVENT",
+        f"UID:{uid}",
+        f"DTSTAMP:{stamp}",
+        f"DTSTART:{start}",
+        f"DTEND:{end}",
+        f"SUMMARY:{summary}",
+    ]
+    if recurrence:
+        rule = recurrence.split(":", 1)[-1] if recurrence.upper().startswith("RRULE") else recurrence
+        lines.append(f"RRULE:{rule}")
+    for addr in attendees or []:
+        lines.append(f"ATTENDEE;RSVP=TRUE:mailto:{addr}")
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    ical = "\r\n".join(lines) + "\r\n"
     saved = _write_calendar().save_event(ical)
     return {
         "source": "icloud",

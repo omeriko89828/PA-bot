@@ -119,10 +119,20 @@ def describe(event: dict) -> str:
 # --- writing --------------------------------------------------------------
 
 
-async def create(summary: str, start_iso: str, end_iso: str) -> dict:
+async def create(
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    recurrence: str | None = None,
+    attendees: list[str] | None = None,
+) -> dict:
     if NEW_EVENTS_ON == "icloud" and icloud.is_configured():
-        return await asyncio.to_thread(icloud.create_event, summary, start_iso, end_iso)
-    raw = await asyncio.to_thread(gcal.create_event, summary, start_iso, end_iso)
+        return await asyncio.to_thread(
+            icloud.create_event, summary, start_iso, end_iso, recurrence, attendees
+        )
+    raw = await asyncio.to_thread(
+        gcal.create_event, summary, start_iso, end_iso, None, recurrence, attendees
+    )
     return gcal.normalize(raw)
 
 

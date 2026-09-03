@@ -11,6 +11,7 @@ Run this file directly to authorize and print your upcoming events:
 import datetime as dt
 import os.path
 
+import tzlocal
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,6 +24,12 @@ SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "token.json"
+
+# Google needs an IANA time-zone name (not just an offset) for recurring events.
+try:
+    _TZ = tzlocal.get_localzone_name()
+except Exception:
+    _TZ = "UTC"
 
 
 def _get_credentials() -> Credentials:
@@ -73,23 +80,43 @@ def events_in_window(start: dt.datetime, end: dt.datetime, max_results: int = 25
 
 
 def create_event(
-    summary: str, start_iso: str, end_iso: str, description: str | None = None
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    description: str | None = None,
+    recurrence: str | None = None,
+    attendees: list[str] | None = None,
 ) -> dict:
     """
     Create an event on the primary calendar and return it.
 
-    start_iso / end_iso: ISO 8601 datetimes *with* a timezone offset,
-    e.g. "2026-09-09T15:00:00+03:00".
+    start_iso / end_iso: ISO 8601 datetimes *with* a timezone offset.
+    recurrence: an RRULE string like "FREQ=WEEKLY;BYDAY=MO,WE,FR" (no prefix).
+    attendees: email addresses to invite.
     """
     body = {
         "summary": summary,
-        "start": {"dateTime": start_iso},
-        "end": {"dateTime": end_iso},
+        "start": {"dateTime": start_iso, "timeZone": _TZ},
+        "end": {"dateTime": end_iso, "timeZone": _TZ},
     }
     if description:
         body["description"] = description
+    if recurrence:
+        rule = recurrence if recurrence.upper().startswith("RRULE") else f"RRULE:{recurrence}"
+        body["recurrence"] = [rule]
+    if attendees:
+        body["attendees"] = [{"email": a} for a in attendees]
 
-    return _service().events().insert(calendarId="primary", body=body).execute()
+    return (
+        _service()
+        .events()
+        .insert(
+            calendarId="primary",
+            body=body,
+            sendUpdates="all" if attendees else "none",
+        )
+        .execute()
+    )
 
 
 def update_event(event_id: str, summary: str, start_iso: str, end_iso: str) -> dict:
