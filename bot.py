@@ -33,6 +33,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 import brain  # noqa: E402  (must come after load_dotenv above)
 import cal  # noqa: E402  (Google + iCloud merged behind one interface)
+import habits  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -128,6 +129,33 @@ async def briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(await _briefing_text())
 
 
+PATTERN_WEEKS = 8
+
+
+async def _patterns_report() -> str:
+    past = await cal.recall(PATTERN_WEEKS * 7)
+    upcoming = await cal.upcoming(7)
+    routines = habits.analyse(past, upcoming)
+    if not routines:
+        return f"Not enough history yet to spot patterns (looked back {PATTERN_WEEKS} weeks)."
+    prose = ""
+    try:
+        prose = await brain.describe_patterns(routines, PATTERN_WEEKS)
+    except Exception:
+        logger.exception("describe_patterns failed")
+    return prose or habits.format_report(routines, PATTERN_WEEKS)
+
+
+async def patterns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/patterns — recurring routines from the last PATTERN_WEEKS weeks."""
+    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+    try:
+        await update.message.reply_text(await _patterns_report())
+    except Exception:
+        logger.exception("patterns failed")
+        await update.message.reply_text("Couldn't work out your patterns right now.")
+
+
 # --- the scheduled job ------------------------------------------------------
 
 
@@ -219,6 +247,16 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         if name == "recall":
             await _handle_recall(update, context, history, user_text, args)
+            return
+        if name == "find_patterns":
+            await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+            try:
+                msg = await _patterns_report()
+            except Exception:
+                logger.exception("find_patterns failed")
+                msg = "Couldn't work out your patterns right now."
+            _remember(history, user_text, msg)
+            await update.message.reply_text(msg)
             return
 
     _remember(history, user_text, answer.text)
@@ -476,13 +514,26 @@ def _briefing_time() -> dt.time:
     return dt.time(hour, minute, tzinfo=ZoneInfo(BRIEFING_TZ))
 
 
+async def _post_init(app: Application) -> None:
+    """Runs once on startup — set the command menu shown when you type '/'."""
+    await app.bot.set_my_commands(
+        [
+            ("agenda", "Today + tomorrow (/agenda 5 for more)"),
+            ("briefing", "Today's briefing now"),
+            ("patterns", "Your recurring routines"),
+            ("reset", "Forget the conversation"),
+        ]
+    )
+
+
 def main() -> None:
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("agenda", agenda))
     app.add_handler(CommandHandler("briefing", briefing))
+    app.add_handler(CommandHandler("patterns", patterns))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^confirm:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_error_handler(on_error)

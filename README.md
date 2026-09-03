@@ -16,7 +16,8 @@ reads/writes my Google and Apple calendars.
 | 6 | Deploy so it runs 24/7 (Google Cloud e2-micro) | done |
 | 7 | Apple / iCloud calendar via CalDAV (merged reads) | done |
 | 8 | Yes/No/Chat buttons; edit events; smart briefing | done |
-| 9 | Look up past events ("when did I last…", habit questions) | done |
+| 9 | Look up past events ("when did I last…") | done |
+| 10 | Habit detection — `/patterns`, recurring routines, missing-this-week | done |
 
 ## Setup
 
@@ -71,9 +72,13 @@ buttons and only acts after you confirm. Finding the event you mean is semantic
 (works across languages); it works out new times for edits itself.
 
 Commands: `/agenda` (today + tomorrow; `/agenda 5` for 5 days), `/briefing`
-(today's events now), `/reset` (clear conversation memory). A briefing is also
-sent automatically every day at `BRIEFING_TIME` (default 08:00, `BRIEFING_TZ`
-default Asia/Jerusalem). `Ctrl+C` stops the bot.
+(today's events now), `/patterns` (recurring routines from the last 8 weeks),
+`/reset` (clear conversation memory). A briefing is also sent automatically
+every day at `BRIEFING_TIME` (default 08:00, `BRIEFING_TZ` default
+Asia/Jerusalem). `Ctrl+C` stops the bot.
+
+You can also just ask in chat — "when did I last see the dentist", "what are my
+routines", "am I keeping up with the gym".
 
 `/agenda` and the briefing merge Google + iCloud events (deduped). New events
 created via chat go to Google. The daily briefing is written by the model from
@@ -89,6 +94,7 @@ request limit, wait for the reset or switch models in `brain.py`.
 - `bot.py` — Telegram wiring: receives messages, keeps per-chat history, replies.
 - `brain.py` — the only file that knows about the language model. Swappable.
 - `cal.py` — merges Google + iCloud behind one interface (the bot only talks to this).
+- `habits.py` — deterministic recurring-routine detection from past events.
 - `gcal.py` — Google Calendar auth + read/create/update/delete. Run directly to authorize.
 - `icloud.py` — iCloud calendar via CalDAV. Run directly to check the connection.
 

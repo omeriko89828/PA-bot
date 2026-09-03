@@ -115,6 +115,21 @@ _EDIT_EVENT_TOOL = types.Tool(
     ]
 )
 
+_PATTERNS_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="find_patterns",
+            description=(
+                "Analyse the user's recurring routines and habits from the last "
+                "couple of months of events. Call this when they ask about their "
+                "patterns, routines, or habits, how often they do something, or "
+                "whether they're keeping up with a regular activity."
+            ),
+            parameters=types.Schema(type="OBJECT", properties={}),
+        )
+    ]
+)
+
 _RECALL_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -170,8 +185,9 @@ def _system_prompt() -> str:
         "start/end times as ISO 8601 with the offset shown, e.g. "
         f"2026-09-04T16:00:00{now.strftime('%z')[:3]}:00.\n\n"
         "Tools: create_event (add), delete_event (remove), edit_event (move / "
-        "rename / resize), recall (look at past events). The user reads their "
-        "upcoming calendar with /agenda."
+        "rename / resize), recall (look at specific past events), find_patterns "
+        "(recurring routines / habits). The user reads their upcoming calendar "
+        "with /agenda."
     )
 
 
@@ -202,6 +218,7 @@ async def reply(history: list[dict], user_message: str) -> Answer:
             _DELETE_EVENT_TOOL,
             _EDIT_EVENT_TOOL,
             _RECALL_TOOL,
+            _PATTERNS_TOOL,
         ],
         # We handle tool calls manually (with a user confirmation step), so the
         # SDK must not execute anything automatically.
@@ -314,6 +331,33 @@ async def plan_edit(event: dict, user_request: str) -> dict | None:
     except (ValueError, KeyError, TypeError):
         logger.warning("plan_edit: couldn't parse %r", text)
         return None
+
+
+async def describe_patterns(routines: list[dict], weeks_back: int) -> str:
+    """Turn habits.analyse() output into a short read-out in the briefing language."""
+    if not routines:
+        return ""
+    lines = []
+    for r in routines[:10]:
+        when = "/".join(r["days"]) if r["days"] else "no fixed day"
+        at = f" around {r['typical_hour']:02d}:00" if r["typical_hour"] is not None else ""
+        gap = " (NOT on the calendar for the coming week)" if (
+            r["missing_next_week"] and r["per_week"] >= 0.75
+        ) else ""
+        lines.append(
+            f"- {r['title']}: {r['count']} times, ~{r['per_week']}/week, "
+            f"mostly {when}{at}{gap}"
+        )
+    prompt = (
+        f"Write a short summary in {BRIEFING_LANG} (3-6 sentences, friendly, no "
+        "bullet points) of the user's routines over the last "
+        f"{weeks_back} weeks, based on this data. Call out anything they usually "
+        "do that isn't on the calendar for the coming week.\n\n" + "\n".join(lines)
+    )
+    try:
+        return await _generate(prompt)
+    except (RateLimited, genai_errors.APIError):
+        return ""
 
 
 async def answer_about_events(events: list[dict], question: str) -> str:
