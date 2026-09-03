@@ -77,6 +77,9 @@ Commands: `/agenda` (today + tomorrow; `/agenda 5` for 5 days), `/briefing`
 every day at `BRIEFING_TIME` (default 08:00, `BRIEFING_TZ` default
 Asia/Jerusalem). `Ctrl+C` stops the bot.
 
+There's also a persistent button bar (🗓 Agenda / 🌤 Briefing / 📊 Patterns) above
+the text box — same as the commands, just tappable.
+
 You can also just ask in chat — "when did I last see the dentist", "what are my
 routines", "am I keeping up with the gym".
 

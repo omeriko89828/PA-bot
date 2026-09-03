@@ -16,7 +16,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ChatAction
 from telegram.error import Conflict
 from telegram.ext import (
@@ -52,6 +57,17 @@ BRIEFING_TZ = os.environ.get("BRIEFING_TZ", "Asia/Jerusalem")
 
 _YES = {"yes", "y", "yeah", "yep", "ok", "okay", "sure", "do it", "confirm", "כן"}
 _NO = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "keep it", "לא", "ביטול"}
+
+# Persistent button bar above the text box. Tapping a button sends its label as
+# a normal message, which chat() routes to the matching handler.
+_BTN_AGENDA = "🗓 Agenda"
+_BTN_BRIEFING = "🌤 Briefing"
+_BTN_PATTERNS = "📊 Patterns"
+_MENU_KB = ReplyKeyboardMarkup(
+    [[_BTN_AGENDA, _BTN_BRIEFING, _BTN_PATTERNS]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
 
 # Buttons shown under every confirmation prompt.
 _CONFIRM_KB = InlineKeyboardMarkup(
@@ -90,15 +106,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.chat_data["history"] = []
     context.chat_data.pop("pending_action", None)
     await update.message.reply_text(
-        "Hi! Ask me things, check /agenda, tell me to add or delete calendar "
-        f"events, and I'll send a briefing every day at {BRIEFING_TIME}."
+        "Hi! Use the buttons below or just talk to me — add / move / delete "
+        f"calendar events, ask about your week or your habits. Daily briefing at "
+        f"{BRIEFING_TIME}.",
+        reply_markup=_MENU_KB,
     )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.chat_data["history"] = []
     context.chat_data.pop("pending_action", None)
-    await update.message.reply_text("Okay, I've forgotten our conversation.")
+    await update.message.reply_text(
+        "Okay, I've forgotten our conversation.", reply_markup=_MENU_KB
+    )
 
 
 async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -207,6 +227,12 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Message from %s: %s", update.effective_user.first_name, user_text)
 
     history = context.chat_data.setdefault("history", [])
+
+    # Persistent menu buttons arrive as ordinary messages — route them.
+    menu = {_BTN_AGENDA: agenda, _BTN_BRIEFING: briefing, _BTN_PATTERNS: patterns}
+    if user_text in menu and not context.chat_data.get("pending_action"):
+        await menu[user_text](update, context)
+        return
 
     if context.chat_data.get("pending_action"):
         await _handle_pending(update, context, history, user_text)
