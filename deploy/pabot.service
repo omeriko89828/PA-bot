@@ -1,0 +1,19 @@
+# systemd unit that keeps the bot running and restarts it if it crashes or the
+# VM reboots. DEPLOY.md generates this file with your real username filled in —
+# this copy is just for reference.
+
+[Unit]
+Description=PA bot (Telegram personal assistant)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/PA-bot
+ExecStart=/home/YOUR_USERNAME/PA-bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

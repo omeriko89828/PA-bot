@@ -82,3 +82,7 @@ request limit, wait for the reset or switch models in `brain.py`.
 - `bot.py` — Telegram wiring: receives messages, keeps per-chat history, replies.
 - `brain.py` — the only file that knows about the language model. Swappable.
 - `gcal.py` — Google Calendar auth + reading/creating events. Run directly to authorize.
+
+## Running 24/7
+
+See [DEPLOY.md](DEPLOY.md) — deploys to a free Google Cloud `e2-micro` VM.
