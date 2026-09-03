@@ -96,10 +96,20 @@ def calendar_names() -> list[str]:
     return [_name(c) for c in _all_calendars()]
 
 
+def _cal_segment(url: str) -> str | None:
+    """'.../calendars/<segment>/...'  ->  '<segment>' (lowercased)."""
+    parts = str(url).rstrip("/").split("/calendars/")
+    if len(parts) < 2:
+        return None
+    return parts[1].split("/")[0].lower()
+
+
 def _calendar_for(event_url: str):
-    """Which of our event calendars an event URL belongs to."""
+    """Which of our event calendars an event URL belongs to (matches on the
+    calendar's path segment, ignoring scheme/port/case)."""
+    seg = _cal_segment(event_url)
     for c in _get_event_calendars():
-        if event_url.startswith(str(c.url).rstrip("/")):
+        if _cal_segment(str(c.url)) == seg:
             return c
     return None
 
