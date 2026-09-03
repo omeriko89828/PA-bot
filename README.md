@@ -13,8 +13,8 @@ reads/writes my Google and Apple calendars.
 | 3 | Read Google Calendar (`/agenda`) | done |
 | 4 | Create events via chat, with a confirmation step | done |
 | 5 | Delete events via chat + scheduled daily briefing | done |
-| 6 | Deploy so it runs 24/7 (Google Cloud e2-micro) | **in progress** |
-| 7 | Apple / iCloud calendar via CalDAV | todo |
+| 6 | Deploy so it runs 24/7 (Google Cloud e2-micro) | done |
+| 7 | Apple / iCloud calendar via CalDAV (merged reads) | done |
 
 ## Setup
 
@@ -67,10 +67,13 @@ Say things like "add dentist Thursday 3pm" or "cancel my lunch with dad" — the
 bot shows what it will do and only acts after you reply "yes". Event matching for
 deletes is semantic (works across languages).
 
-Commands: `/agenda` (next 7 days), `/briefing` (today's events now), `/reset`
-(clear conversation memory). A briefing is also sent automatically every day at
-`BRIEFING_TIME` (default 08:00, `BRIEFING_TZ` default Asia/Jerusalem).
-`Ctrl+C` stops the bot.
+Commands: `/agenda` (today + tomorrow; `/agenda 5` for 5 days), `/briefing`
+(today's events now), `/reset` (clear conversation memory). A briefing is also
+sent automatically every day at `BRIEFING_TIME` (default 08:00, `BRIEFING_TZ`
+default Asia/Jerusalem). `Ctrl+C` stops the bot.
+
+`/agenda` and the briefing merge Google + iCloud events (deduped). New events
+created via chat go to Google.
 
 Note: uses the Gemini free tier (`gemini-3.5-flash-lite`). If you hit the daily
 request limit, wait for the reset or switch models in `brain.py`.
@@ -81,7 +84,9 @@ request limit, wait for the reset or switch models in `brain.py`.
 
 - `bot.py` — Telegram wiring: receives messages, keeps per-chat history, replies.
 - `brain.py` — the only file that knows about the language model. Swappable.
-- `gcal.py` — Google Calendar auth + reading/creating events. Run directly to authorize.
+- `cal.py` — merges Google + iCloud behind one interface (the bot only talks to this).
+- `gcal.py` — Google Calendar auth + read/create/delete. Run directly to authorize.
+- `icloud.py` — iCloud calendar via CalDAV. Run directly to check the connection.
 
 ## Running 24/7
 

@@ -100,9 +100,21 @@ def delete_event(event_id: str) -> None:
 
 
 def event_when(event: dict) -> str:
-    """Human-readable start time of an event dict."""
+    """Human-readable start time of a raw Google event dict."""
     start = event["start"].get("dateTime") or event["start"].get("date")
     return _pretty(start)
+
+
+def normalize(event: dict) -> dict:
+    """Raw Google event -> the bot's common event shape (see cal.py)."""
+    date_only = event["start"].get("date")
+    return {
+        "source": "google",
+        "id": event["id"],
+        "summary": event.get("summary", "(no title)"),
+        "start": event["start"].get("dateTime") or date_only,
+        "all_day": date_only is not None,
+    }
 
 
 def format_events(events: list[dict]) -> str:

@@ -9,7 +9,6 @@ Run it with:   ./.venv/bin/python bot.py
 Stop it with:  Ctrl+C
 """
 
-import asyncio
 import datetime as dt
 import logging
 import os
@@ -32,7 +31,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 import brain  # noqa: E402  (must come after load_dotenv above)
-import gcal  # noqa: E402
+import cal  # noqa: E402  (Google + iCloud merged behind one interface)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -90,18 +89,24 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List events in the next 7 days."""
+    """
+    List upcoming events. Default: today + tomorrow.
+    "/agenda 5" -> next 5 days.
+    """
+    days = 2
+    if context.args:
+        try:
+            days = max(1, min(int(context.args[0]), 30))
+        except ValueError:
+            pass
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     try:
-        events = await asyncio.to_thread(gcal.upcoming_events, 25, 7)
+        events = await cal.upcoming(days)
     except Exception:
         logger.exception("calendar read failed")
-        await update.message.reply_text(
-            "Couldn't read your calendar. Run `./.venv/bin/python gcal.py` once "
-            "to authorize."
-        )
+        await update.message.reply_text("Couldn't read your calendar right now.")
         return
-    await update.message.reply_text(gcal.format_events(events))
+    await update.message.reply_text(cal.format_events(events))
 
 
 async def briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -116,13 +121,13 @@ async def briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _briefing_text() -> str:
     try:
-        events = await asyncio.to_thread(gcal.events_today)
+        events = await cal.today()
     except Exception:
         logger.exception("briefing calendar read failed")
         return "☀️ Good morning! (Couldn't reach your calendar right now.)"
     if not events:
         return "☀️ Good morning! Nothing on the calendar for the rest of today."
-    return "☀️ Good morning! Here's the rest of your day:\n\n" + gcal.format_events(events)
+    return "☀️ Good morning! Here's the rest of your day:\n\n" + cal.format_events(events)
 
 
 async def briefing_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -204,7 +209,7 @@ async def _propose_create(update, context, history, user_text, args) -> None:
     }
     preview = (
         f"📅 Create this event?\n\n{summary}\n"
-        f"{gcal.pretty(start.isoformat())} – {end.strftime('%H:%M')}\n\n"
+        f"{cal.pretty(start.isoformat())} – {end.strftime('%H:%M')}\n\n"
         f"Reply 'yes' to add it, 'no' to cancel."
     )
     _remember(history, user_text, preview)
@@ -213,7 +218,7 @@ async def _propose_create(update, context, history, user_text, args) -> None:
 
 async def _propose_delete(update, context, history, user_text, args) -> None:
     try:
-        events = await asyncio.to_thread(gcal.upcoming_events, 100, 60)
+        events = await cal.upcoming(60)
     except Exception:
         logger.exception("calendar read failed")
         await update.message.reply_text("Couldn't read your calendar just now.")
@@ -244,9 +249,7 @@ async def _propose_delete(update, context, history, user_text, args) -> None:
         return
 
     if len(matches) > 1:
-        listing = "\n".join(
-            f"• {e.get('summary', '(no title)')} — {gcal.event_when(e)}" for e in matches[:8]
-        )
+        listing = "\n".join(f"• {cal.describe(e)}" for e in matches[:8])
         msg = (
             f"That matches {len(matches)} events:\n\n{listing}\n\n"
             f"Which one? Add the day or time."
@@ -256,13 +259,12 @@ async def _propose_delete(update, context, history, user_text, args) -> None:
         return
 
     event = matches[0]
-    label = f"{event.get('summary', '(no title)')} — {gcal.event_when(event)}"
     context.chat_data["pending_action"] = {
         "kind": "delete",
-        "event_id": event["id"],
-        "label": label,
+        "event": event,
+        "label": cal.describe(event),
     }
-    preview = f"🗑 Delete this event?\n\n{label}\n\nReply 'yes' to delete, 'no' to keep it."
+    preview = f"🗑 Delete this event?\n\n{cal.describe(event)}\n\nReply 'yes' to delete, 'no' to keep it."
     _remember(history, user_text, preview)
     await update.message.reply_text(preview)
 
@@ -287,16 +289,16 @@ async def _handle_pending(update, context, history, user_text) -> None:
 
     try:
         if pending["kind"] == "create":
-            event = await asyncio.to_thread(
-                gcal.create_event, pending["summary"], pending["start"], pending["end"]
+            event = await cal.create(
+                pending["summary"], pending["start"], pending["end"]
             )
-            msg = f"Added ✅ {event.get('summary')} — {gcal.pretty(pending['start'])}"
+            msg = f"Added ✅ {cal.describe(event)}"
         else:  # delete
-            await asyncio.to_thread(gcal.delete_event, pending["event_id"])
+            await cal.delete(pending["event"])
             msg = f"Deleted ✅ {pending['label']}"
     except Exception:
         logger.exception("%s failed", pending["kind"])
-        msg = "Couldn't do that — something went wrong with Google Calendar."
+        msg = "Couldn't do that — something went wrong with the calendar."
 
     _remember(history, user_text, msg)
     await update.message.reply_text(msg)

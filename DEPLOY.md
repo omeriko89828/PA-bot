@@ -107,6 +107,18 @@ git pull
 sudo systemctl restart pabot
 ```
 
+## iCloud (optional)
+
+To include iCloud calendars, add to `~/PA-bot/.env` on the VM:
+
+```
+ICLOUD_USERNAME=your-apple-id@example.com
+ICLOUD_APP_PASSWORD=abcd-efgh-ijkl-mnop
+```
+
+(App-specific password from appleid.apple.com → Sign-In and Security.) Then
+`sudo systemctl restart pabot`. Leave unset to run Google-only.
+
 ## If you re-authorize Google on your Mac
 
 `token.json` changes — re-upload it to the VM and `sudo systemctl restart pabot`.

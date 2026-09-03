@@ -185,9 +185,7 @@ async def choose_events(events: list[dict], user_request: str) -> list[int]:
     """
     lines = []
     for i, e in enumerate(events):
-        summary = e.get("summary", "(no title)")
-        start = e["start"].get("dateTime") or e["start"].get("date")
-        lines.append(f"{i}: {summary} — {start}")
+        lines.append(f"{i}: {e['summary']} — {e['start']} [{e['source']}]")
 
     prompt = (
         "Here are the user's upcoming calendar events:\n"
