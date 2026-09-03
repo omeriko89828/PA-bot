@@ -217,9 +217,37 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if name == "edit_event":
             await _propose_change(update, context, history, user_text, "edit")
             return
+        if name == "recall":
+            await _handle_recall(update, context, history, user_text, args)
+            return
 
     _remember(history, user_text, answer.text)
     await update.message.reply_text(answer.text)
+
+
+async def _handle_recall(update, context, history, user_text, args) -> None:
+    """Answer a question about past events. Read-only, no confirmation."""
+    try:
+        days_back = int(args.get("days_back", 30))
+        days_forward = int(args.get("days_forward", 0))
+    except (TypeError, ValueError):
+        days_back, days_forward = 30, 0
+    days_back = max(1, min(days_back, 366))
+
+    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+    try:
+        events = await cal.recall(days_back, days_forward)
+        msg = await brain.answer_about_events(events, user_text)
+    except brain.RateLimited:
+        await update.message.reply_text("Hit the Gemini free-tier limit — try again in a minute.")
+        return
+    except Exception:
+        logger.exception("recall failed")
+        await update.message.reply_text("Couldn't look that up in your calendar.")
+        return
+
+    _remember(history, user_text, msg)
+    await update.message.reply_text(msg)
 
 
 async def _propose_create(update, context, history, user_text, args) -> None:

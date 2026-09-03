@@ -4,11 +4,12 @@ The "brain" — everything about talking to the language model lives here.
 `reply(history, user_message)` returns an `Answer`:
   - Answer(text="...")             a plain conversational reply
   - Answer(action={"name","args"}) the model wants to create / delete / edit an
-                                   event; the bot works out the details and
-                                   confirms with the user before doing anything.
+                                   event (bot confirms first) or recall past
+                                   events to answer a question (read-only).
 
 Helpers: choose_events() picks which event a request refers to, plan_edit()
-works out an event's new values, briefing_summary() writes the morning briefing.
+works out an event's new values, answer_about_events() answers a question from a
+list of past events, briefing_summary() writes the morning briefing.
 
 If we ever swap Gemini for another model, this is the only file that changes.
 """
@@ -114,6 +115,35 @@ _EDIT_EVENT_TOOL = types.Tool(
     ]
 )
 
+_RECALL_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="recall",
+            description=(
+                "Look at PAST (or a wider range of) calendar events to answer a "
+                "question about the user's history or habits — 'when did I last "
+                "see the dentist', 'how many times did I work out last month', "
+                "'what did I do last week'. The date table only covers the "
+                "future, so use this whenever the question is about the past."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "days_back": types.Schema(
+                        type="INTEGER",
+                        description="How many days into the past to look (e.g. 7, 30, 90).",
+                    ),
+                    "days_forward": types.Schema(
+                        type="INTEGER",
+                        description="How many days ahead to also include (default 0).",
+                    ),
+                },
+                required=["days_back"],
+            ),
+        )
+    ]
+)
+
 
 def _date_table() -> tuple[dt.datetime, str]:
     """(now, a plain-text list of the next 15 dates by weekday)."""
@@ -140,7 +170,8 @@ def _system_prompt() -> str:
         "start/end times as ISO 8601 with the offset shown, e.g. "
         f"2026-09-04T16:00:00{now.strftime('%z')[:3]}:00.\n\n"
         "Tools: create_event (add), delete_event (remove), edit_event (move / "
-        "rename / resize). The user reads their calendar with /agenda."
+        "rename / resize), recall (look at past events). The user reads their "
+        "upcoming calendar with /agenda."
     )
 
 
@@ -166,7 +197,12 @@ async def reply(history: list[dict], user_message: str) -> Answer:
 
     config = types.GenerateContentConfig(
         system_instruction=_system_prompt(),
-        tools=[_CREATE_EVENT_TOOL, _DELETE_EVENT_TOOL, _EDIT_EVENT_TOOL],
+        tools=[
+            _CREATE_EVENT_TOOL,
+            _DELETE_EVENT_TOOL,
+            _EDIT_EVENT_TOOL,
+            _RECALL_TOOL,
+        ],
         # We handle tool calls manually (with a user confirmation step), so the
         # SDK must not execute anything automatically.
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -278,6 +314,23 @@ async def plan_edit(event: dict, user_request: str) -> dict | None:
     except (ValueError, KeyError, TypeError):
         logger.warning("plan_edit: couldn't parse %r", text)
         return None
+
+
+async def answer_about_events(events: list[dict], question: str) -> str:
+    """Answer a question using a list of (usually past) calendar events."""
+    if not events:
+        lines = "(no events in that period)"
+    else:
+        lines = "\n".join(
+            f"  {e['start'][:16].replace('T', ' ')}  {e['summary']}  [{e['source']}]"
+            for e in events
+        )
+    prompt = (
+        "Answer the user's question using only these calendar events. Be brief "
+        "and concrete (counts, dates). Reply in the user's language.\n\n"
+        f"Events:\n{lines}\n\nQuestion: {question}"
+    )
+    return await _generate(prompt)
 
 
 async def briefing_summary(events: list[dict], tomorrow_first: dict | None) -> str:

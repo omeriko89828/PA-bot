@@ -12,6 +12,8 @@ Common event shape used everywhere above this file:
     }
 
 New events are created on Google (see NEW_EVENTS_ON). Reads merge both sources.
+`window()` / `recall()` can read the past — the building block for later habit
+/ pattern analysis.
 """
 
 import asyncio
@@ -44,15 +46,27 @@ def _merge(lists: list[list[dict]]) -> list[dict]:
     return unique
 
 
-async def upcoming(days: int = 2) -> list[dict]:
+async def window(start: dt.datetime, end: dt.datetime) -> list[dict]:
+    """Merged events between two datetimes — the past is allowed."""
     google = asyncio.to_thread(
-        lambda: [gcal.normalize(e) for e in gcal.upcoming_events(50, days)]
+        lambda: [gcal.normalize(e) for e in gcal.events_in_window(start, end)]
     )
     if icloud.is_configured():
-        apple = asyncio.to_thread(icloud.upcoming_events, days)
+        apple = asyncio.to_thread(icloud.events_in_window, start, end)
         g, a = await _gather_lenient(google, apple)
         return _merge([g, a])
     return _merge([await google])
+
+
+async def upcoming(days: int = 2) -> list[dict]:
+    now = dt.datetime.now().astimezone()
+    return await window(now, now + dt.timedelta(days=days))
+
+
+async def recall(days_back: int, days_forward: int = 0) -> list[dict]:
+    """Merged events from `days_back` ago up to `days_forward` from now."""
+    now = dt.datetime.now().astimezone()
+    return await window(now - dt.timedelta(days=days_back), now + dt.timedelta(days=days_forward))
 
 
 async def _gather_lenient(google_awaitable, apple_awaitable):

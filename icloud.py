@@ -171,6 +171,11 @@ def upcoming_events(within_days: int = 2) -> list[dict]:
     return _search(now, now + dt.timedelta(days=within_days))
 
 
+def events_in_window(start: dt.datetime, end: dt.datetime) -> list[dict]:
+    """iCloud events between two datetimes (can be in the past)."""
+    return _search(start, end)
+
+
 def create_event(summary: str, start_iso: str, end_iso: str) -> dict:
     uid = str(uuid.uuid4())
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")

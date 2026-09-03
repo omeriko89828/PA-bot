@@ -16,6 +16,7 @@ reads/writes my Google and Apple calendars.
 | 6 | Deploy so it runs 24/7 (Google Cloud e2-micro) | done |
 | 7 | Apple / iCloud calendar via CalDAV (merged reads) | done |
 | 8 | Yes/No/Chat buttons; edit events; smart briefing | done |
+| 9 | Look up past events ("when did I last…", habit questions) | done |
 
 ## Setup
 

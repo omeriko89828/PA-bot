@@ -67,6 +67,11 @@ def upcoming_events(max_results: int = 25, within_days: int | None = None) -> li
     return _list(now, time_max, max_results)
 
 
+def events_in_window(start: dt.datetime, end: dt.datetime, max_results: int = 250) -> list[dict]:
+    """Raw Google events between two datetimes (can be in the past)."""
+    return _list(start, end, max_results)
+
+
 def create_event(
     summary: str, start_iso: str, end_iso: str, description: str | None = None
 ) -> dict:
