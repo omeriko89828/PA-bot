@@ -1,9 +1,9 @@
 """
-PA bot — Phase 5: delete events + a scheduled daily briefing.
+PA bot — Telegram personal assistant.
 
-The bot chats via Gemini (with memory), lists events with /agenda, creates and
-deletes events (each behind a yes/no confirmation), and sends a "here's your
-day" message every morning.
+Chats via Gemini (with memory), merges Google + iCloud calendars (/agenda),
+creates and deletes events behind a Yes / No / Chat button confirmation, and
+sends a daily briefing every morning.
 
 Run it with:   ./.venv/bin/python bot.py
 Stop it with:  Ctrl+C
@@ -16,11 +16,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -50,6 +51,17 @@ BRIEFING_TZ = os.environ.get("BRIEFING_TZ", "Asia/Jerusalem")
 
 _YES = {"yes", "y", "yeah", "yep", "ok", "okay", "sure", "do it", "confirm", "כן"}
 _NO = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "keep it", "לא", "ביטול"}
+
+# Buttons shown under every confirmation prompt.
+_CONFIRM_KB = InlineKeyboardMarkup(
+    [
+        [
+            InlineKeyboardButton("✅ Yes", callback_data="confirm:yes"),
+            InlineKeyboardButton("❌ No", callback_data="confirm:no"),
+            InlineKeyboardButton("💬 Chat", callback_data="confirm:chat"),
+        ]
+    ]
+)
 
 
 # --- chat id persistence --------------------------------------------------
@@ -209,11 +221,10 @@ async def _propose_create(update, context, history, user_text, args) -> None:
     }
     preview = (
         f"📅 Create this event?\n\n{summary}\n"
-        f"{cal.pretty(start.isoformat())} – {end.strftime('%H:%M')}\n\n"
-        f"Reply 'yes' to add it, 'no' to cancel."
+        f"{cal.pretty(start.isoformat())} – {end.strftime('%H:%M')}"
     )
     _remember(history, user_text, preview)
-    await update.message.reply_text(preview)
+    await update.message.reply_text(preview, reply_markup=_CONFIRM_KB)
 
 
 async def _propose_delete(update, context, history, user_text, args) -> None:
@@ -264,27 +275,69 @@ async def _propose_delete(update, context, history, user_text, args) -> None:
         "event": event,
         "label": cal.describe(event),
     }
-    preview = f"🗑 Delete this event?\n\n{cal.describe(event)}\n\nReply 'yes' to delete, 'no' to keep it."
+    preview = f"🗑 Delete this event?\n\n{cal.describe(event)}"
     _remember(history, user_text, preview)
-    await update.message.reply_text(preview)
+    await update.message.reply_text(preview, reply_markup=_CONFIRM_KB)
 
 
 async def _handle_pending(update, context, history, user_text) -> None:
+    """Typed reply to a confirmation prompt (the buttons are the main path)."""
     answer = user_text.strip().lower()
-    pending = context.chat_data["pending_action"]
 
     if answer in _NO:
-        context.chat_data.pop("pending_action")
+        context.chat_data.pop("pending_action", None)
         msg = "Cancelled — nothing changed."
         _remember(history, user_text, msg)
         await update.message.reply_text(msg)
         return
 
     if answer not in _YES:
-        await update.message.reply_text("Please reply 'yes' or 'no'.")
+        await update.message.reply_text("Tap a button above, or type 'yes' / 'no'.")
         return
 
-    context.chat_data.pop("pending_action")
+    await _run_pending(update, context, history, user_text)
+
+
+async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A tap on one of the confirmation buttons."""
+    query = update.callback_query
+    await query.answer()
+    choice = query.data.split(":", 1)[1]  # yes | no | chat
+    history = context.chat_data.setdefault("history", [])
+
+    # Take the buttons off the prompt so they can't be tapped again.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    if not context.chat_data.get("pending_action"):
+        await query.message.reply_text("That's no longer waiting for a decision.")
+        return
+
+    if choice == "no":
+        context.chat_data.pop("pending_action", None)
+        msg = "Cancelled — nothing changed."
+        _remember(history, "(tapped No)", msg)
+        await query.message.reply_text(msg)
+        return
+
+    if choice == "chat":
+        context.chat_data.pop("pending_action", None)
+        msg = "Okay, dropped that. What's up?"
+        _remember(history, "(tapped Chat)", msg)
+        await query.message.reply_text(msg)
+        return
+
+    await _run_pending(update, context, history, "(tapped Yes)")
+
+
+async def _run_pending(update, context, history, user_text) -> None:
+    """Execute the pending create/delete. Works from a typed 'yes' or a button."""
+    pending = context.chat_data.pop("pending_action", None)
+    if pending is None:
+        return
+    reply = update.effective_message.reply_text
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
 
     try:
@@ -301,7 +354,7 @@ async def _handle_pending(update, context, history, user_text) -> None:
         msg = "Couldn't do that — something went wrong with the calendar."
 
     _remember(history, user_text, msg)
-    await update.message.reply_text(msg)
+    await reply(msg)
 
 
 def _remember(history: list, user_text: str, model_text: str) -> None:
@@ -335,6 +388,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("agenda", agenda))
     app.add_handler(CommandHandler("briefing", briefing))
+    app.add_handler(CallbackQueryHandler(on_button, pattern=r"^confirm:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_error_handler(on_error)
 
